@@ -8,7 +8,7 @@ export function MessageList() {
   const [taskFilter, setTaskFilter] = useState<string>('');
   const [tasks, setTasks] = useState<Task[]>([]);
 
-  const { items: messages, loading, error, refresh } = useApiList<Message>(
+  const { items: messages, loading, error } = useApiList<Message>(
     () => messageApi.getMessages(taskFilter ? { task_id: taskFilter } : undefined),
     { immediate: true }
   );

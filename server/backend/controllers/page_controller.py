@@ -52,7 +52,7 @@ def get_page(page_id):
 def create_page():
     """创建新页面"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
         if not data:
             return jsonify({
                 'success': False,
@@ -125,7 +125,7 @@ def update_page(page_id):
                 'message': '页面不存在'
             }), 404
         
-        data = request.get_json()
+        data = request.get_json(silent=True)
         if not data:
             return jsonify({
                 'success': False,

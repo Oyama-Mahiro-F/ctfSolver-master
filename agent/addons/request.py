@@ -9,16 +9,45 @@ import importlib
 import os
 from hashlib import md5
 from html.parser import HTMLParser
-from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.parse import urlparse, parse_qs, parse_qsl, urlencode
 from urllib.request import urlopen, Request, HTTPHandler, HTTPSHandler, build_opener, ProxyHandler, HTTPRedirectHandler
 from urllib.error import HTTPError, URLError
 from http.cookiejar import CookieJar
 import ssl
 import traceback
 from config import config
+from utils.logger import logger
 from utils import flagUtil
 
 warnings.filterwarnings("ignore")
+
+
+def _error_result(message, url=None, params=None):
+    """统一错误返回结构。
+
+    调用方（explorer/poc 等）会直接访问 status/url/header/history，
+    因此错误分支必须与成功分支同构，否则会 KeyError。
+    """
+    return {
+        'savePath': '',
+        'url': url or (params or {}).get('url', '') or '',
+        'status': 0,
+        'header': {},
+        'content': '',
+        'history': [],
+        'error': message,
+    }
+
+
+def _merge_cookie_header(existing, new_pair):
+    """把新的 cookie 名值对合并进 Cookie 头，同名以新值覆盖，避免重复堆积。"""
+    name = new_pair.split('=', 1)[0].strip()
+    kept = [
+        p.strip() for p in existing.split(';')
+        if p.strip() and p.split('=', 1)[0].strip() != name
+    ]
+    kept.append(new_pair.strip())
+    return '; '.join(kept)
 
 
 def remove_svg_from_content(content):
@@ -46,40 +75,58 @@ def remove_svg_from_content(content):
 def extract_forms(html):
     """从HTML中提取form元素和对应的URL"""
 
+    # HTML 的 void 元素没有闭合标签，不能计入嵌套深度，
+    # 否则遇到 <input> 后 </form> 永远匹配不到，表单提取结果恒为空。
+    void_elements = {
+        'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+        'link', 'meta', 'param', 'source', 'track', 'wbr',
+    }
+
     class Parser(HTMLParser):
         def __init__(self):
             super().__init__()
             self.forms = []
             self.current_form = []
-            self.depth = 0
+            self.in_form = False
+            self.url = ''
+
+        @staticmethod
+        def _attrs_str(attrs):
+            return ' '.join(f'{k}="{v}"' for k, v in attrs)
 
         def handle_starttag(self, tag, attrs):
-            if tag == 'form' and self.depth == 0:
-                self.depth = 1
-                attrs_str = ' '.join(f'{k}="{v}"' for k, v in attrs)
-                self.current_form.append(f'<form {attrs_str}>')
-                self.url = dict(attrs).get('action', '')
-            elif self.depth > 0:
-                self.depth += 1
-                attrs_str = ' '.join(f'{k}="{v}"' for k, v in attrs)
-                self.current_form.append(f'<{tag} {attrs_str}>')
+            if tag == 'form':
+                if not self.in_form:
+                    self.in_form = True
+                    self.current_form = [f'<form {self._attrs_str(attrs)}>']
+                    self.url = dict(attrs).get('action', '')
+                else:
+                    # 嵌套 form 属于非法 HTML，按普通标签处理
+                    self.current_form.append(f'<{tag} {self._attrs_str(attrs)}>')
+            elif self.in_form:
+                self.current_form.append(f'<{tag} {self._attrs_str(attrs)}>')
+
+        def handle_startendtag(self, tag, attrs):
+            if self.in_form:
+                self.current_form.append(f'<{tag} {self._attrs_str(attrs)}/>')
 
         def handle_endtag(self, tag):
-            if self.depth > 0:
-                if tag == 'form' and self.depth == 1:
-                    self.current_form.append('</form>')
-                    self.forms.append({
-                        'form': ''.join(self.current_form),
-                        'url': self.url
-                    })
-                    self.current_form = []
-                    self.depth = 0
-                else:
-                    self.depth -= 1
-                    self.current_form.append(f'</{tag}>')
+            if not self.in_form:
+                return
+            if tag == 'form':
+                self.current_form.append('</form>')
+                self.forms.append({
+                    'form': ''.join(self.current_form),
+                    'url': self.url,
+                })
+                self.current_form = []
+                self.in_form = False
+                self.url = ''
+            elif tag not in void_elements:
+                self.current_form.append(f'</{tag}>')
 
         def handle_data(self, data):
-            if self.depth > 0:
+            if self.in_form:
                 self.current_form.append(data)
 
     parser = Parser()
@@ -92,14 +139,14 @@ def add_page(new_page, need_save=False):
     from agents.saver import save_page
     request = new_page['request']
     response = new_page['response']
-    md5_request = md5((str(request) + config.TASK_ID).encode()).hexdigest()
-    md5_response = md5((request['method']+str(request['params'])+str(response['content']) + config.TASK_ID).encode()).hexdigest()
+    md5_request = md5((str(request) + str(config.TASK_ID or "")).encode()).hexdigest()
+    md5_response = md5((request['method']+str(request['params'])+str(response['content']) + str(config.TASK_ID or "")).encode()).hexdigest()
     if new_page['response'] and md5_response not in config.EXPLORED_PAGE_RESPONSES and new_page['response'][
         'status'] != 404:
         config.EXPLORED_PAGE_RESPONSES.append(md5_response)
         if not need_save:
             save_result = save_page(new_page)
-            if config.NEED_FLAG and save_result['flag']:
+            if config.NEED_FLAG and save_result.get('flag'):
                 if "/admin../flag.txt" in response['url']:
                     time.sleep(120)
                 flagUtil.set_flag(save_result['flag'])
@@ -112,7 +159,8 @@ def add_page(new_page, need_save=False):
             }
         new_page['key'] = save_result.get("key", "")
         new_page['description'] = save_result.get("description", "")
-        new_page['name'] = save_result['name']
+        # 模型可能不给 name，用请求指纹兜底，避免 KeyError 中断探索
+        new_page['name'] = save_result.get('name') or str(md5_request)
         new_page['id'] = md5_request
 
         form_datas = extract_forms(response['content'])
@@ -166,12 +214,16 @@ def process_addon_templates(text) -> str:
         param = match.group(2).strip()
         
         # 移除参数两端的引号（如果有）
-        if param.startswith('"') and param.endswith('"'):
-            param = param[1:-1]
-        elif param.startswith("'") and param.endswith("'"):
-            param = param[1:-1]
-        elif param.startswith("base64|"):
-            param = base64.b64decode(param[7:].encode()).decode()
+        try:
+            if param.startswith('"') and param.endswith('"'):
+                param = param[1:-1]
+            elif param.startswith("'") and param.endswith("'"):
+                param = param[1:-1]
+            elif param.startswith("base64|"):
+                # 解码失败不应中断整个请求，退回原始模板
+                param = base64.b64decode(param[7:].encode()).decode()
+        except Exception:
+            return match.group(0)
 
         try:
             # 动态导入addon模块
@@ -213,7 +265,8 @@ def run(params):
     """
     try:
         # 设置代理
-        proxy_handler = None
+        proxy_url = params.get('proxy')
+        proxy_handler = ProxyHandler({'http': proxy_url, 'https': proxy_url}) if proxy_url else None
 
         # 设置请求头和参数
         headers = params.get('header', {})
@@ -229,6 +282,24 @@ def run(params):
         
         method = params.get('method', 'GET').upper()
         files_config = params.get('files', {})
+
+        # 兼容 requests 风格的文件参数 {参数名: (文件名, 内容[, 类型])}，
+        # 统一转换成下面使用的 {'item': [...]} 结构，避免文件被静默丢弃。
+        if files_config and 'item' not in files_config:
+            normalized_items = []
+            for field_name, spec in files_config.items():
+                if isinstance(spec, (list, tuple)) and len(spec) >= 2:
+                    normalized_items.append({
+                        'name': field_name,
+                        'filename': spec[0],
+                        'content': spec[1],
+                        'content_type': spec[2] if len(spec) > 2 else 'application/octet-stream',
+                    })
+            if normalized_items:
+                files_config = {'item': normalized_items}
+            else:
+                logger.warning(f"files 参数格式无法识别，已忽略: {files_config}")
+                files_config = {}
 
         need_history = params.get('history', True)
 
@@ -284,34 +355,32 @@ def run(params):
         # 创建HTTPS handler
         https_handler = HTTPSHandler(context=ssl_context)
         
-        # 创建opener
-        if proxy_handler:
-            opener = build_opener(proxy_handler, https_handler)
-        else:
-            opener = build_opener(https_handler)
+        # 组装 opener 需要的 handler。
+        # 实际请求在下方使用 NoRedirectHandler 手动处理重定向，必须一并带上
+        # https_handler（关闭证书校验）和 proxy_handler，否则二者都不会生效。
+        extra_handlers = [h for h in (https_handler, proxy_handler) if h is not None]
 
         # 处理GET请求URL中的重复参数
         url = params['url']
         if method == 'GET' and '?' in url:
             base_url, query_string = url.split('?', 1)
-            url_params = parse_qs(query_string)
-            
+            # 使用 parse_qsl 保留重复参数（parse_qs 会把 ?a=1&a=2 折叠成单值）
+            url_pairs = parse_qsl(query_string, keep_blank_values=True)
+
             # 移除URL中与request_params重复的参数
-            filtered_params = {k: v[0] for k, v in url_params.items() if k not in request_params}
-            
-            # 重建URL
-            if filtered_params:
+            filtered_pairs = [(k, v) for k, v in url_pairs if k not in request_params]
+
+            if filtered_pairs:
                 if no_url_encode:
                     # 禁用URL编码时，手动构建查询字符串
-                    query_parts = []
-                    for key, value in filtered_params.items():
-                        query_parts.append(f"{key}={value}")
-                    url = f"{base_url}?{'&'.join(query_parts)}"
+                    url = f"{base_url}?" + '&'.join(f"{k}={v}" for k, v in filtered_pairs)
                 else:
                     # 使用标准URL编码
-                    url = f"{base_url}?{urlencode(filtered_params)}"
-            else:
+                    url = f"{base_url}?{urlencode(filtered_pairs, doseq=True)}"
+            elif url_pairs:
+                # URL 中的参数已被 request_params 接管，去掉查询串避免重复
                 url = base_url
+            # 原本没有查询串时保持 URL 原样
 
         # 保存原始URL用于no_url_encode模式
 
@@ -440,7 +509,7 @@ def run(params):
         max_redirects = 20
         all_set_cookies = []  # 收集所有重定向过程中设置的cookies
         history = []  # 记录所有请求和响应的历史
-        current_cookies = ""  # 当前的cookie字符串
+        current_cookies = headers.get('Cookie', '') or headers.get('cookie', '')  # 当前cookie（含调用方原始 Cookie）
 
         origin_request = {
             'url': url,
@@ -458,15 +527,15 @@ def run(params):
                 # 创建请求对象
                 req = Request(url, data=request_data, headers=headers, method=method)
 
-                # 添加cookies到请求头
+                # 添加cookies到请求头（合并调用方原始 Cookie 与服务器新下发的 Set-Cookie）
                 if current_cookies:
                     req.add_header('Cookie', current_cookies)
-                headers['Cookie'] = current_cookies
+                    headers['Cookie'] = current_cookies
 
 
 
 
-                openera = build_opener(NoRedirectHandler)
+                openera = build_opener(NoRedirectHandler, *extra_handlers)
 
                 # 发送请求
                 response = openera.open(req, timeout=60)
@@ -509,15 +578,9 @@ def run(params):
                 response = e
                 
             except URLError as e:
-                return {
-                    'content': "",
-                    'error': f"URL Error: {str(e)}"
-                }
+                return _error_result(f"URL Error: {str(e)}", url=url, params=params)
             except Exception as e:
-                return {
-                    'content': "",
-                    'error': f"Request Error: {str(e)}"
-                }
+                return _error_result(f"Request Error: {str(e)}", url=url, params=params)
             
             # 记录当前请求和响应
             request_params_copy = request_params.copy()
@@ -555,10 +618,7 @@ def run(params):
                             # 解析cookie并添加到当前cookies中
                             cookie_parts = cookie_value.split(';')[0]  # 只取cookie的名值对部分
                             if '=' in cookie_parts:
-                                if current_cookies:
-                                    current_cookies += "; " + cookie_parts
-                                else:
-                                    current_cookies = cookie_parts
+                                current_cookies = _merge_cookie_header(current_cookies, cookie_parts)
                     else:
                         set_cookie_headers.append(header_value)
                         all_set_cookies.append(header_value)
@@ -566,13 +626,10 @@ def run(params):
                         # 解析cookie并添加到当前cookies中
                         cookie_parts = header_value.split(';')[0]  # 只取cookie的名值对部分
                         if '=' in cookie_parts:
-                            if current_cookies:
-                                current_cookies += "; " + cookie_parts
-                            else:
-                                current_cookies = cookie_parts
+                            current_cookies = _merge_cookie_header(current_cookies, cookie_parts)
 
-            # 检查是否需要继续重定向
-            is_redirect = status_code in [301, 302, 303, 307, 308]
+            # 检查是否需要继续重定向（no_redirect=True 时不跟随）
+            is_redirect = status_code in [301, 302, 303, 307, 308] and not no_redirect
             if is_redirect and redirect_count < max_redirects:
                 redirect_url = response_headers.get('location')
                 if not redirect_url:
@@ -617,10 +674,17 @@ def run(params):
         
         save_path = ""
 
-        if 'needSave' in params and params['needSave'] == 'True':
-            save_path = config.TEMP_PATH + "/" + uuid.uuid4().hex + "-" + params['saveName']
-            with open(save_path, "wb") as f:
-                f.write(response_content)
+        if params.get('needSave') == 'True':
+            # 保存失败不应连带丢弃已经成功的响应
+            try:
+                os.makedirs(config.TEMP_PATH, exist_ok=True)
+                save_name = params.get('saveName') or uuid.uuid4().hex
+                save_path = os.path.join(config.TEMP_PATH, f"{uuid.uuid4().hex}-{save_name}")
+                with open(save_path, "wb") as f:
+                    f.write(response_content)
+            except Exception as e:
+                logger.warning(f"保存响应到文件失败: {e}")
+                save_path = ""
 
         if 'needReturn' in params and params['needReturn'] == 'False':
             need_return = False
@@ -642,8 +706,4 @@ def run(params):
 
     except Exception as e:
         traceback.print_exc()
-
-        return {
-            'content': "",
-            'error': str(e)
-        }
+        return _error_result(str(e), params=params)

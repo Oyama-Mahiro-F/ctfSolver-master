@@ -52,7 +52,7 @@ def get_vuln(vuln_id):
 def create_vuln():
     """创建新漏洞"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
         if not data:
             return jsonify({
                 'success': False,
@@ -125,7 +125,7 @@ def update_vuln(vuln_id):
                 'message': '漏洞不存在'
             }), 404
         
-        data = request.get_json()
+        data = request.get_json(silent=True)
         if not data:
             return jsonify({
                 'success': False,

@@ -6,6 +6,24 @@ import os
 
 db = SQLAlchemy()
 
+
+def _decode_json_field(raw):
+    """把数据库中的 JSON 字段解析为对象。
+
+    历史数据可能存在多重编码（被 json.dumps 两次），因此循环解析直到不再是字符串。
+    """
+    if not raw:
+        return {}
+    value = raw
+    for _ in range(5):
+        if not isinstance(value, str):
+            return value
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
 class Task(db.Model):
     __tablename__ = 'tasks'
     
@@ -29,10 +47,17 @@ class Task(db.Model):
     
     @property
     def explorered_pages(self):
-        """动态获取探索的页面列表"""
-        if self.task_path and os.path.exists(self.task_path):
+        """动态获取探索的页面列表
+
+        task_path 可能是任意字符串（甚至指向一个文件），必须容错，
+        否则单条脏数据就会让 /api/tasks 整个列表接口返回 500。
+        """
+        if not self.task_path or not os.path.isdir(self.task_path):
+            return []
+        try:
             return os.listdir(self.task_path)
-        return []
+        except OSError:
+            return []
     
     def to_dict(self, include_messages=False):
         result = {
@@ -42,6 +67,7 @@ class Task(db.Model):
             'status': self.status,
             'is_running': self.is_running,
             'flag': self.flag,
+            'task_path': self.task_path,
             'explorered_pages': self.explorered_pages,
             'pages_count': len(self.pages),
             'vulns_count': len(self.vulns),
@@ -75,7 +101,7 @@ class Solution(db.Model):
     task_id = db.Column(db.String(36), db.ForeignKey('tasks.id'), nullable=True)
     
     # 关联关系
-    task = db.relationship('Task', backref=db.backref('solutions', lazy=True))
+    task = db.relationship('Task', backref=db.backref('solutions', lazy=True, cascade='all, delete-orphan'))
     
     def __init__(self, **kwargs):
         super(Solution, self).__init__(**kwargs)
@@ -104,7 +130,7 @@ class Page(db.Model):
     task_id = db.Column(db.String(36), db.ForeignKey('tasks.id'), nullable=True)
     
     # 关联关系
-    task = db.relationship('Task', backref=db.backref('pages', lazy=True))
+    task = db.relationship('Task', backref=db.backref('pages', lazy=True, cascade='all, delete-orphan'))
     
     def __init__(self, **kwargs):
         super(Page, self).__init__(**kwargs)
@@ -113,46 +139,58 @@ class Page(db.Model):
     
     @property
     def request_dict(self):
-        """将request JSON字符串转换为字典"""
-        if self.request:
-            try:
-                return json.loads(self.request)
-            except json.JSONDecodeError:
-                return {}
-        return {}
+        """将 request 解析为字典（兼容历史多重编码数据）"""
+        return _decode_json_field(self.request)
     
     @request_dict.setter
     def request_dict(self, value):
-        """将字典转换为JSON字符串存储"""
-        if value:
-            self.request = json.dumps(value, ensure_ascii=False)
-        else:
+        """将字典（或已序列化的 JSON 字符串）规范化为 JSON 字符串存储
+
+        兼容 agent 端直接传入 json.dumps(...) 结果的情况，避免双重编码，
+        保证 to_dict() 返回的是对象而非字符串。
+        """
+        if isinstance(value, str):
+            try:
+                json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                value = None
+        if value is None or value == "":
             self.request = None
+        elif isinstance(value, str):
+            self.request = value
+        else:
+            self.request = json.dumps(value, ensure_ascii=False)
     
     @property
     def response_dict(self):
-        """将response JSON字符串转换为字典"""
-        if self.response:
-            try:
-                return json.loads(self.response)
-            except json.JSONDecodeError:
-                return {}
-        return {}
+        """将 response 解析为字典（兼容历史多重编码数据）"""
+        return _decode_json_field(self.response)
     
     @response_dict.setter
     def response_dict(self, value):
-        """将字典转换为JSON字符串存储"""
-        if value:
-            self.response = json.dumps(value, ensure_ascii=False)
-        else:
+        """将字典（或已序列化的 JSON 字符串）规范化为 JSON 字符串存储
+
+        兼容 agent 端直接传入 json.dumps(...) 结果的情况，避免双重编码，
+        保证 to_dict() 返回的是对象而非字符串。
+        """
+        if isinstance(value, str):
+            try:
+                json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                value = None
+        if value is None or value == "":
             self.response = None
+        elif isinstance(value, str):
+            self.response = value
+        else:
+            self.response = json.dumps(value, ensure_ascii=False)
     
     def to_dict(self):
         return {
             'id': self.id,
             'name': self.name,
-            'request': json.loads(self.request_dict),
-            'response': json.loads(self.response_dict),
+            'request': self.request_dict,
+            'response': self.response_dict,
             'description': self.description,
             'key': self.key,
             'discovered_at': self.discovered_at.isoformat() if self.discovered_at else None,
@@ -172,7 +210,7 @@ class Vuln(db.Model):
     task_id = db.Column(db.String(36), db.ForeignKey('tasks.id'), nullable=True)
     
     # 关联关系
-    task = db.relationship('Task', backref=db.backref('vulns', lazy=True))
+    task = db.relationship('Task', backref=db.backref('vulns', lazy=True, cascade='all, delete-orphan'))
     
     def __init__(self, **kwargs):
         super(Vuln, self).__init__(**kwargs)
@@ -181,39 +219,51 @@ class Vuln(db.Model):
     
     @property
     def request_dict(self):
-        """将request JSON字符串转换为字典"""
-        if self.request:
-            try:
-                return json.loads(self.request)
-            except json.JSONDecodeError:
-                return {}
-        return {}
+        """将 request 解析为字典（兼容历史多重编码数据）"""
+        return _decode_json_field(self.request)
     
     @request_dict.setter
     def request_dict(self, value):
-        """将字典转换为JSON字符串存储"""
-        if value:
-            self.request = json.dumps(value, ensure_ascii=False)
-        else:
+        """将字典（或已序列化的 JSON 字符串）规范化为 JSON 字符串存储
+
+        兼容 agent 端直接传入 json.dumps(...) 结果的情况，避免双重编码，
+        保证 to_dict() 返回的是对象而非字符串。
+        """
+        if isinstance(value, str):
+            try:
+                json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                value = None
+        if value is None or value == "":
             self.request = None
+        elif isinstance(value, str):
+            self.request = value
+        else:
+            self.request = json.dumps(value, ensure_ascii=False)
     
     @property
     def response_dict(self):
-        """将response JSON字符串转换为字典"""
-        if self.response:
-            try:
-                return json.loads(self.response)
-            except json.JSONDecodeError:
-                return {}
-        return {}
+        """将 response 解析为字典（兼容历史多重编码数据）"""
+        return _decode_json_field(self.response)
     
     @response_dict.setter
     def response_dict(self, value):
-        """将字典转换为JSON字符串存储"""
-        if value:
-            self.response = json.dumps(value, ensure_ascii=False)
-        else:
+        """将字典（或已序列化的 JSON 字符串）规范化为 JSON 字符串存储
+
+        兼容 agent 端直接传入 json.dumps(...) 结果的情况，避免双重编码，
+        保证 to_dict() 返回的是对象而非字符串。
+        """
+        if isinstance(value, str):
+            try:
+                json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                value = None
+        if value is None or value == "":
             self.response = None
+        elif isinstance(value, str):
+            self.response = value
+        else:
+            self.response = json.dumps(value, ensure_ascii=False)
     
     def to_dict(self):
         return {
@@ -221,8 +271,8 @@ class Vuln(db.Model):
             'vuln_type': self.vuln_type,
             'severity': self.severity,
             'description': self.description,
-            'request': json.loads(self.request_dict),
-            'response': json.loads(self.response_dict),
+            'request': self.request_dict,
+            'response': self.response_dict,
             'discovered_at': self.discovered_at.isoformat() if self.discovered_at else None,
             'task_id': self.task_id
         }
@@ -242,7 +292,7 @@ class Message(db.Model):
     
     # 添加与Task的关联关系 - 使用session_id作为task_id
     task_id = db.Column(db.String(36), db.ForeignKey('tasks.id'), nullable=True)
-    task = db.relationship('Task', backref=db.backref('messages', lazy=True, order_by='Message.created_at'))
+    task = db.relationship('Task', backref=db.backref('messages', lazy=True, order_by='Message.created_at', cascade='all, delete-orphan'))
     
     def __init__(self, **kwargs):
         super(Message, self).__init__(**kwargs)

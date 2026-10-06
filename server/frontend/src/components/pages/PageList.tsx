@@ -9,7 +9,7 @@ export function PageList() {
   const [taskFilter, setTaskFilter] = useState<string>('');
   const [tasks, setTasks] = useState<Task[]>([]);
 
-  const { items: pages, loading, error, refresh } = useApiList<Page>(
+  const { items: pages, loading, error } = useApiList<Page>(
     () => pageApi.getPages(taskFilter || undefined),
     { immediate: true }
   );

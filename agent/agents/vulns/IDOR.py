@@ -53,11 +53,15 @@ def need_detect(request_json):
     return True
 
 def simple_detect(request_json, response, param=None):
-    
+    if not isinstance(param, dict) or "type" not in param:
+        return "工具调用格式错误：param 必须为字典且包含 type"
+
     if "type" in param:
         if param['type'] == 'jwt_decode':
             # 从请求中获取JWT令牌
-            token = param['token']
+            token = param.get('token')
+            if not token:
+                return "jwt_decode 需要提供 token 参数"
                 
             try:
                 # 将JWT令牌分割成三部分
@@ -93,7 +97,9 @@ def simple_detect(request_json, response, param=None):
                 return "提供的 request 模板不是合法的 JSON 格式，请检查后重试"
 
 
-            token = param['token']
+            token = param.get('token')
+            if not token:
+                return "jwt 需要提供 token 参数"
 
             authorized_pre = token.split(" ", 1)[0] if " " in token else ""
             if authorized_pre:
@@ -113,12 +119,15 @@ def simple_detect(request_json, response, param=None):
                     return "JWT解码失败或payload不存在"
                     
                 # 获取需要测试的参数值范围
+                value_spec = str(param.get('value') or '')
+                if not value_spec:
+                    return "缺少 value 参数（需要模糊测试的取值范围）"
                 test_values = []
-                if '-' in param['value']:
-                    start, end = map(int, param['value'].split('-'))
+                if '-' in value_spec:
+                    start, end = map(int, value_spec.split('-'))
                     test_values = list(range(start, end + 1))
                 else:
-                    test_values = param['value'].split(',')
+                    test_values = value_spec.split(',')
                 
                 # 存储测试结果
                 results = {}
@@ -132,7 +141,9 @@ def simple_detect(request_json, response, param=None):
                     try:
                         # 修改payload中的目标参数
                         new_payload = decoded_jwt['payload'].copy()
-                        new_payload[param['param']] = test_value
+                        fuzz_key = param.get('param')
+                        if fuzz_key:
+                            new_payload[fuzz_key] = test_value
                         
                         # 重新编码payload
                         new_payload_b64 = base64.b64encode(json.dumps(new_payload).encode()).decode().rstrip('=')
@@ -186,12 +197,15 @@ def simple_detect(request_json, response, param=None):
 
             try:
                 # 获取需要测试的参数值范围
+                value_spec = str(param.get('value') or '')
+                if not value_spec:
+                    return "缺少 value 参数（需要模糊测试的取值范围）"
                 test_values = []
-                if '-' in param['value']:
-                    start, end = map(int, param['value'].split('-'))
+                if '-' in value_spec:
+                    start, end = map(int, value_spec.split('-'))
                     test_values = list(range(start, end + 1))
                 else:
-                    test_values = param['value'].split(',')
+                    test_values = value_spec.split(',')
 
                 # 存储测试结果
                 results = {}

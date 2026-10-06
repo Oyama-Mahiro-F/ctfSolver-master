@@ -12,10 +12,12 @@ import type {
 import { mockApi } from './mockData';
 
 // 是否使用Mock数据（可以通过环境变量控制）
-// 默认使用mock数据，设置为 'false' 或环境变量 VITE_USE_MOCK=false 来使用真实API
-const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false';
+// 默认使用真实后端；仅在显式设置 VITE_USE_MOCK=true 时才使用 mock 数据
+const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+// 默认使用同源相对路径：开发时由 vite 的 /api 代理转发，
+// 生产时由 nginx（或 proxy_server.py）转发，避免跨域与硬编码端口。
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
 // 通用请求函数
 async function request<T>(

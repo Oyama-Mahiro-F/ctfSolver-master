@@ -56,15 +56,6 @@ export function TaskList() {
     }
   };
 
-  const handleToggleRunning = async (taskId: string) => {
-    try {
-      await taskApi.toggleTaskRunning(taskId);
-      fetchTasks();
-    } catch (err) {
-      console.error('切换任务状态失败:', err);
-    }
-  };
-
   const refresh = () => {
     fetchTasks();
     setSelectedTasks(new Set());

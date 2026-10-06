@@ -71,7 +71,7 @@ def parse_solutions(response):
 
     except Exception as e:
         traceback.print_exc()
-        logger.warn(e)
+        logger.warning(e)
         pass
     return solutions
 

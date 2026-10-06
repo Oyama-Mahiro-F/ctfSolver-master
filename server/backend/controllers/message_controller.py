@@ -16,12 +16,11 @@ def get_messages():
         
         query = Message.query
         
-        if session_id:
-            query = query.filter_by(session_id=session_id)
-        
-        if task_id:
-            # 如果指定了task_id，使用task_id作为session_id
-            query = query.filter_by(session_id=task_id)
+        # session_id 与 task_id 都映射到 messages.session_id。
+        # 原实现两个 filter_by 叠加会变成 AND，导致同时传入时结果恒为空。
+        effective_session_id = task_id or session_id
+        if effective_session_id:
+            query = query.filter_by(session_id=effective_session_id)
         
         messages = query.order_by(Message.created_at.asc()).all()
         
@@ -62,7 +61,7 @@ def get_message(message_id):
 def create_message():
     """创建新消息"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
         if not data:
             return jsonify({
                 'success': False,
@@ -125,7 +124,7 @@ def update_message(message_id):
                 'message': '消息不存在'
             }), 404
         
-        data = request.get_json()
+        data = request.get_json(silent=True)
         if not data:
             return jsonify({
                 'success': False,

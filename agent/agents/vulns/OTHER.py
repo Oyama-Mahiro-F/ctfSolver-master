@@ -16,5 +16,9 @@ def need_detect(request_json):
     return True
 
 def simple_detect(request_json, response, param=None):
-    code = param['code']
+    if not isinstance(param, dict):
+        return "工具调用格式错误：param 必须为字典"
+    code = param.get('code')
+    if not code:
+        return "缺少 Python 代码：请在 <tool> 中提供 <code> 子标签"
     return run_python.run(code)

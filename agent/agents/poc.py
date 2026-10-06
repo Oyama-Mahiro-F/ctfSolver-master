@@ -501,7 +501,12 @@ class Scanner:
             if extractor_type == 'regex':
                 import re
                 patterns = extractor.get('regex', [])
-                group = extractor.get('group', 0)
+                if isinstance(patterns, str):
+                    patterns = [patterns]
+                try:
+                    group = int(extractor.get('group', 0))
+                except (TypeError, ValueError):
+                    group = 0
 
                 for pattern in patterns:
                     match = re.search(pattern, response_text, re.IGNORECASE)
@@ -540,17 +545,30 @@ class Scanner:
 
             if matcher_type == 'word':
                 words = matcher.get('words', [])
+                if isinstance(words, str):
+                    words = [words]
                 match_result = self.check_word_matcher(response.text, words, condition)
                 matcher_results.append((match_result, condition))
 
             elif matcher_type == 'status':
                 status_codes = matcher.get('status', [])
-                match_result = response.status_code in status_codes
+                # YAML 里可能写成标量（status: 200），不归一化会直接 TypeError 或按字符迭代
+                if isinstance(status_codes, (str, int)):
+                    status_codes = [status_codes]
+                normalized_codes = []
+                for code in status_codes:
+                    try:
+                        normalized_codes.append(int(code))
+                    except (TypeError, ValueError):
+                        continue
+                match_result = response.status_code in normalized_codes
                 matcher_results.append((match_result, condition))
 
             elif matcher_type == 'regex':
                 import re
                 patterns = matcher.get('regex', [])
+                if isinstance(patterns, str):
+                    patterns = [patterns]
                 match_result = any(
                     re.search(pattern, response.text, re.IGNORECASE)
                     for pattern in patterns
@@ -565,21 +583,10 @@ class Scanner:
         if not matcher_results:
             return False
 
-        # 根据每个匹配器的条件判断整体结果
-        # 默认使用AND逻辑，所有匹配器都必须满足自己的条件
-        final_result = True
-
-        for result, condition in matcher_results:
-            if condition == 'or':
-                # 对于OR条件的匹配器，只要有一个为True就满足
-                if result:
-                    return True
-            else:  # AND条件
-                # 对于AND条件的匹配器，所有都必须为True
-                if not result:
-                    final_result = False
-
-        return final_result
+        # matchers 列表整体语义为 AND：每个匹配器都必须满足自己的条件。
+        # 原实现在 or 匹配器命中时直接 return True，会短路掉已经失败的 and 匹配器；
+        # 而 or 匹配器未命中时又什么都不做，导致未命中仍然返回 True（误报漏洞并写库）。
+        return all(result for result, _condition in matcher_results)
 
     def check_word_matcher(self, text, words, condition):
         """
@@ -596,8 +603,10 @@ class Scanner:
         if not words:
             return False
 
-        if all(word in text for word in words):
-            return True
+        if condition == 'or':
+            return any(word in text for word in words)
+
+        return all(word in text for word in words)
 
 
 class Flagger:
@@ -706,11 +715,21 @@ class Flagger:
             poc_message = message_template.format(url=request['url'], request=request, response=response)
             add_message(poc_message, pure_id)
         
-        # 开始AI测试
-        result = chat(poc_prompt.format(request_desc=config.get_addon('request'), poc_file=open(poc_file, "r").read()), pure_id)
+        # 开始AI测试。
+        # 必须先把 POC 文档与工具说明格式化进提示词，后续每一轮都复用同一个 prompt；
+        # 原实现从第 2 轮起传入未格式化的 poc_prompt，字面量 {poc_file} 使模型看不到 POC 内容。
+        with open(poc_file, "r", encoding="utf-8") as f:
+            poc_content = f.read()
+        exploit_prompt = poc_prompt.format(
+            request_desc=config.get_addon('request'),
+            poc_file=poc_content,
+        )
+        result = chat(exploit_prompt, pure_id)
         
         # 循环处理result，直到遇到summary标签
-        while True:
+        # 使用带上限的循环，避免模型始终不产出 <summary> 时无限循环
+        max_steps = 30
+        for _step in range(max_steps):
             try:
                 # 检查是否包含summary标签
                 if '<summary>' in result and '</summary>' in result:
@@ -720,6 +739,14 @@ class Flagger:
                         summary_xml = f"<summary>{summary_match.group(1)}</summary>"
                         # 将summary标签转换为字典
                         summary_dict = xmltodict.parse(summary_xml)['summary']
+                        # 模型可能只输出纯文本 summary，规范化为 dict，避免调用方 .get 崩溃
+                        if not isinstance(summary_dict, dict):
+                            summary_dict = {
+                                'vuln': 'False',
+                                'findFlag': 'False',
+                                'desc': str(summary_dict),
+                                'flag': '',
+                            }
                         logger.info(f"漏洞利用完成，返回summary结果: {summary_dict}")
                         return summary_dict
                 
@@ -738,12 +765,12 @@ class Flagger:
                         add_message(f"执行结果: {request_result}", pure_id)
                         
                         # 继续对话，获取下一步结果
-                        result = chat(poc_prompt, pure_id)
+                        result = chat(exploit_prompt, pure_id)
                         
                     except Exception as e:
                         logger.error(f"处理value标签时出错: {str(e)}")
                         # 如果处理value标签失败，直接继续对话
-                        result = chat(poc_prompt, pure_id)
+                        result = chat(exploit_prompt, pure_id)
                 else:
                     # 如果没有value标签也没有summary标签，继续对话
                     logger.debug("未找到value或summary标签，继续对话")
@@ -753,11 +780,17 @@ class Flagger:
                 logger.error(f"处理漏洞利用结果时出错: {str(e)}")
                 # 发生异常时，返回空的summary结果
                 return {
-                    'summary': {
-                        'vuln': 'False',
-                        'findFlag': 'False',
-                        'desc': f'漏洞利用过程中发生错误: {str(e)}',
-                        'flag': ''
-                    }
+                    'vuln': 'False',
+                    'findFlag': 'False',
+                    'desc': f'漏洞利用过程中发生错误: {str(e)}',
+                    'flag': ''
                 }
+
+        logger.warning("漏洞利用达到最大步数仍未产出 <summary>，按未发现漏洞处理")
+        return {
+            'vuln': 'False',
+            'findFlag': 'False',
+            'desc': f'漏洞利用达到最大步数({max_steps})仍未产出总结',
+            'flag': ''
+        }
         

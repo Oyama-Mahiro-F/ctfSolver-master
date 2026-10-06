@@ -11,7 +11,7 @@ export function VulnList() {
   const [severityFilter, setSeverityFilter] = useState<string>('');
   const [tasks, setTasks] = useState<Task[]>([]);
 
-  const { items: vulns, loading, error, refresh } = useApiList<Vuln>(
+  const { items: vulns, loading, error } = useApiList<Vuln>(
     () => vulnApi.getVulns(taskFilter || undefined),
     { immediate: true }
   );

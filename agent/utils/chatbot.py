@@ -1,12 +1,10 @@
 import sqlite3
-from turtle import st
 from typing import List, Dict
 import uuid
 from config import config
 from utils.logger import logger
 from utils.sql_helper import SQLiteHelper
 import openai
-from config import config
 
 
 import re
@@ -37,7 +35,7 @@ def interact_with_server(action_type: str,process_id=None, data: dict = None):
                     # 创建成功，重新获取状态
                     response = requests.get(f"{config.SERVER_URL}/api/process/{process_id}/status", timeout=5)
                 else:
-                    logger.warn(f"创建进程失败: {create_resp.status_code}")
+                    logger.warning(f"创建进程失败: {create_resp.status_code}")
                     return None
             if response.status_code == 200:
                 return response.json()['data']
@@ -53,10 +51,10 @@ def interact_with_server(action_type: str,process_id=None, data: dict = None):
 
                 
     except requests.exceptions.RequestException as e:
-        logger.warn(f"服务器交互失败: {e}")
+        logger.warning(f"服务器交互失败: {e}")
         return None
     except Exception as e:
-        logger.warn(f"服务器交互异常: {e}")
+        logger.warning(f"服务器交互异常: {e}")
         return None
 
 def check_process_status(process_id):
@@ -139,14 +137,28 @@ def chat(prompt: str, session_id: str, status: str="default", _type="action", ty
     # 连接数据库
     conn = sqlite3.connect(config.DB_PATH)
     cursor = conn.cursor()
-    session_ids = [session_id]
-
     # 获取所有相关的session_id，从父到子排序
-
+    # （原实现只查当前会话，sessions 表写了却从不读，父子上下文实际丢失）
     try:
+        ancestors = []
+        seen = {session_id}
+        current_session = session_id
+        for _ in range(20):  # 限制深度，防御环状 parent 引用
+            row = SQLiteHelper.fetch_one(
+                "SELECT parent_id FROM sessions WHERE session_id = ? ORDER BY id LIMIT 1",
+                (current_session,),
+            )
+            parent = row[0] if row else None
+            if not parent or parent in seen:
+                break
+            ancestors.append(parent)
+            seen.add(parent)
+            current_session = parent
+        session_ids = list(reversed(ancestors)) + [session_id]
+
         messages: List[Dict[str, str]] = []
         for s in session_ids:
-        # 获取历史消息
+            # 获取历史消息
             if s != session_id:
                 result = SQLiteHelper.execute_query('''
                      SELECT role, content 
@@ -155,10 +167,11 @@ def chat(prompt: str, session_id: str, status: str="default", _type="action", ty
                      ORDER BY created_at ASC
                  ''', (s,))
             else:
+                # 当前会话排除被 update_message_status 标记为 temp 的临时消息
                 result = SQLiteHelper.execute_query('''
                     SELECT role, content 
                     FROM messages 
-                    WHERE session_id = ? 
+                    WHERE session_id = ? and (status is null or status != 'temp')
                     ORDER BY created_at ASC
                 ''', (s,))
             
@@ -233,7 +246,7 @@ def chat(prompt: str, session_id: str, status: str="default", _type="action", ty
         return ai_response
         
     except Exception as e:
-        logger.warn(e)
+        logger.warning(e)
         raise e
         return str(e)
         

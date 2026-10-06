@@ -269,14 +269,23 @@ class MasterOrchestrator:
                         params=sub_task.get("params", {}),
                         dependencies=[task.id]
                     )
-                # 标记原任务为完成（已分解）
+                # 标记原任务为完成（已分解）。
+                # 必须先置为 RUNNING：complete_task 要求状态为 RUNNING，
+                # 否则原任务既完不成也不重入队，子任务的依赖永远无法满足。
+                self.task_queue.start_task(task.id, "master")
                 self.task_queue.complete_task(task.id, {"decomposed": True, "sub_tasks": sub_tasks})
+                # 必须让出事件循环：分解分支会直接 continue，走不到循环末尾的 sleep。
+                # 一旦决策连续返回 decompose（或子任务又需要分解），
+                # run() 就会变成不中断的同步循环，把整个事件循环饿死、内存无限增长。
+                await asyncio.sleep(0.1)
                 continue
             
             # 分配任务给Agent
             agent_id = decision.get("agent_id")
             if not agent_id:
                 logger.warning(f"无法为任务 {task.id} 分配Agent，稍后重试")
+                # 任务已被弹出队列，必须重新入队，否则永久丢失
+                self.task_queue.requeue_task(task)
                 await asyncio.sleep(5)
                 continue
             
@@ -284,6 +293,7 @@ class MasterOrchestrator:
             agent = self.agent_registry.get_agent(agent_id)
             if not agent or agent.current_tasks >= agent.max_concurrent_tasks:
                 logger.warning(f"Agent {agent_id} 不可用，稍后重试")
+                self.task_queue.requeue_task(task)
                 await asyncio.sleep(1)
                 continue
             

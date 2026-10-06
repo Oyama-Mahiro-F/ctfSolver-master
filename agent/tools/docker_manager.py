@@ -181,21 +181,26 @@ class DockerManager:
             return False, "", "Docker不可用"
         
         if container_name not in self.containers:
-            # 尝试创建临时容器
+            # 尝试创建并启动临时容器。
+            # create_container 内部只调用 containers.create()，不会启动容器，
+            # 若不 start 就 exec，执行必然失败。
             temp_name = f"temp_{int(time.time())}"
             container_id = self.create_container(temp_name, command)
             if not container_id:
                 return False, "", "无法创建容器"
+            if not self.start_container(temp_name):
+                return False, "", "无法启动容器"
             container_name = temp_name
         
         try:
             container = self.containers[container_name]
             
-            # 执行命令
+            # 执行命令。
+            # 注意：docker-py 的 exec_run() 没有 timeout 参数，传入会直接 TypeError，
+            # 因此这里不再传递（超时需由调用方或工具自身控制）。
             exec_result = container.exec_run(
                 command,
-                workdir=workdir,
-                timeout=timeout
+                workdir=workdir
             )
             
             stdout = exec_result.output.decode('utf-8', errors='ignore') if exec_result.output else ""

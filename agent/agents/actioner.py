@@ -142,8 +142,8 @@ def execute_solution(solution, page, key, explorer_pages, vuln_db):
     try:
         # vuln_db = [{'id': '0dc52cfd-22e1-454a-9c33-e0962e6cae0b', 'task_id': '03a02a6a-b3f7-46a4-81a2-afc151cd4301', 'vuln_type': 'UPLOAD', 'desc': '存在文件上传漏洞。上传的 PHP 文件可以被访问，但没有被正确解析为 PHP 代码。请求 URL 为 http://172.20.10.13:55226/posts/upload-article.php，请求方法为 POST，请求参数包括 name 和 email，上传文件参数名为 articleFile，文件内容为 【】，文件名为 test.php，文件类型为 text/plain。上传后的文件可以通过 http://172.20.10.13:55226/posts/uploads/test.php 访问。', 'request_json': {'url': 'http://172.20.10.13:55226/posts/upload-article.php', 'method': 'POST', 'header': {'User-Agent': 'python-requests/2.32.3', 'Accept-Encoding': 'gzip, deflate, zstd', 'Accept': '*/*', 'Connection': 'keep-alive'}, 'param': {'name': 'John Doe', 'email': 'john.doe@example.com'}, 'files': {'articleFile': ('example_article.txt', 'This is a sample article for testing purposes.', 'text/plain')}}}]
         global knowledge_base
-        vuln = solution['vuln']
-        desc = solution['desc']
+        vuln = (solution.get('vuln') or 'OTHER').strip() or 'OTHER'
+        desc = solution.get('desc', '')
 
         vuln_db_desc = "\n".join([f"""{i['id']}: {i['desc']}""" for i in vuln_db])
 
@@ -157,31 +157,29 @@ def execute_solution(solution, page, key, explorer_pages, vuln_db):
             status="running"
         )
 
-        solution_id = detect_message.get("id")
+        # send_pure_message_with_status 在后端不可用时返回 None
+        session_id = (detect_message or {}).get("id")
 
-        session_id = solution_id
-        try:
-            vuln_module = __import__(f"agents.vulns.{vuln}", fromlist=["simple_detect", "prompt_detect", "need_detect"])
-        except:
-            vuln = "OTHER"
-            vuln_module = __import__(f"agents.vulns.{vuln}", fromlist=["simple_detect", "prompt_detect", "need_detect"])
-        need_detect = getattr(vuln_module, "need_detect")
-        if not need_detect(page['request']):
-            vuln = "OTHER"
-            vuln_module = __import__(f"agents.vulns.{vuln}", fromlist=["simple_detect", "prompt_detect", "need_detect"])
+        def _load_vuln_module(name):
+            """按漏洞类型加载检测模块；模块缺失或接口不全时回退到 OTHER。"""
+            for candidate in (name, 'OTHER'):
+                try:
+                    module = __import__(
+                        f"agents.vulns.{candidate}",
+                        fromlist=["simple_detect", "prompt_detect", "need_detect"],
+                    )
+                    if all(hasattr(module, attr) for attr in ("simple_detect", "prompt_detect", "need_detect")):
+                        return candidate, module
+                except Exception:
+                    continue
+            raise ImportError(f"无法加载漏洞检测模块: {name}")
 
-            # if detect_message:
-            #     status_text = f"✅ {page['name']} 页面漏洞检测思路 [{vuln}] 不满足前置条件，跳过检测"
-            #
-            #     agent_manager.update_pure_message_status(
-            #         detect_message.get('id'),
-            #         "finish",
-            #         status_text
-            #     )
-            # return {}
-            # vuln_module = __import__(f"agents.vulns.{vuln}", fromlist=["simple_detect", "prompt_detect", "need_detect"])
-        simple_detect = getattr(vuln_module, "simple_detect")
-        prompt_detect = getattr(vuln_module, "prompt_detect")
+        vuln, vuln_module = _load_vuln_module(vuln)
+        if not vuln_module.need_detect(page['request']):
+            # 不满足前置条件时改用通用检测思路
+            vuln, vuln_module = _load_vuln_module("OTHER")
+        simple_detect = vuln_module.simple_detect
+        prompt_detect = vuln_module.prompt_detect
         prompt = prompt_template.format(ctf_desc=config.CTF_DESC, request=page['request'], response=page['response'], vuln=vuln, prompt_detect=prompt_detect, request_desc=config.get_addon("request_vuln"), vuln_db_desc=vuln_db_desc, key=key)
     except Exception as e:
         traceback.print_exc()
@@ -189,6 +187,7 @@ def execute_solution(solution, page, key, explorer_pages, vuln_db):
     try:
         step_count = 0
         all_results = []
+        summary = None
         # 导入chatbot模块以使用进程状态检查
         from utils.chatbot import check_process_status
 
@@ -197,11 +196,30 @@ def execute_solution(solution, page, key, explorer_pages, vuln_db):
             session_id = add_message(message)
         else:
             add_message(message, session_id)
+        # 所有漏洞类型都必须有步数上限；原实现只对 OTHER 设限，
+        # IDOR/LFI 在模型持续输出 <tool> 时会无限循环并占满检测线程池。
+        max_steps = 30
+        # 为获取 flag 而追加“深入利用”提示的次数上限，避免永不收敛
+        max_need_flag_injections = 3
+        need_flag_injections = 0
+
         while True:
 
             step_count += 1
-            if (step_count > 30 and vuln == 'OTHER') or config.FLAG:
-                summary = {"vuln":"False", "findFlag":"False", "desc":"", "flag":""}
+            if config.FLAG:
+                # 已拿到 flag；保留已有结论，不要用空结论覆盖
+                if summary is None:
+                    summary = {"vuln": "False", "findFlag": "False", "desc": "", "flag": ""}
+                break
+            if step_count > max_steps:
+                logger.warning(f"[{vuln}] 达到最大检测步数({max_steps})，结束本思路")
+                if summary is None:
+                    summary = {
+                        "vuln": "False",
+                        "findFlag": "False",
+                        "desc": f"达到最大检测步数({max_steps})仍未得出结论",
+                        "flag": "",
+                    }
                 break
             # 在每次循环开始前检查进程状态
             check_process_status(session_id)
@@ -225,7 +243,14 @@ def execute_solution(solution, page, key, explorer_pages, vuln_db):
                     if not result:
                         add_message(f"上一轮检测试未发现漏洞，请继续测试或进行总结", session_id)
                     else:
-                        all_results.extend(result)
+                        # simple_detect 可能返回 list / str / dict，统一成 list 再累积，
+                        # 否则 extend(str) 会把字符串按单字符拆开
+                        if isinstance(result, list):
+                            all_results.extend(result)
+                        elif isinstance(result, dict):
+                            all_results.append(result)
+                        else:
+                            all_results.append(str(result))
                         add_message(f"上一轮检测发现漏洞：{result}，请继续测试或进行总结", session_id)
             elif vuln_xml:
                 vuln_id = xmltodict.parse(vuln_xml.group(1))['info']['id']
@@ -234,11 +259,20 @@ def execute_solution(solution, page, key, explorer_pages, vuln_db):
                 add_message(f"漏洞详情如下：{vuln_detail}", session_id)
             elif exploit_xml:
                 exploit_id = xmltodict.parse(exploit_xml.group(1))['exploit']['id']
-                exploit_message = xmltodict.parse(exploit_xml.group(1))['exploit']['message']
-                # vuln_db为列表，需要根据id查找
-                exploit_detail = next((i for i in vuln_db if i['id'] == exploit_id), None)
-                exploit_result = vulner.exploit_vuln(exploit_detail['request'], exploit_detail['vuln_type'], exploit_detail['desc'], exploit_message)
-                add_message(f"漏洞利用结果如下：{exploit_result}", session_id)
+                exploit_message = xmltodict.parse(exploit_xml.group(1))['exploit'].get('message', '')
+                # vuln_db 为列表，需要根据 id 查找。
+                # 注意记录里的键是 request_json（见 task_helper.get_all_vulns），不是 request。
+                exploit_detail = next((i for i in vuln_db if i.get('id') == exploit_id), None)
+                if not exploit_detail:
+                    add_message(f"未找到 id 为 {exploit_id} 的漏洞记录，请重新选择", session_id)
+                else:
+                    exploit_result = vulner.exploit_vuln(
+                        exploit_detail.get('request_json') or exploit_detail.get('request') or {},
+                        exploit_detail.get('vuln_type', ''),
+                        exploit_detail.get('desc', ''),
+                        exploit_message,
+                    )
+                    add_message(f"漏洞利用结果如下：{exploit_result}", session_id)
             elif tool_xmls:
                 for tool_xml in tool_xmls:
                     param = xmltodict.parse(tool_xml)['tool']
@@ -276,7 +310,7 @@ def execute_solution(solution, page, key, explorer_pages, vuln_db):
             elif page_xml:
                 page_id = xmltodict.parse(page_xml.group(1))['page']['id']
                 new_page = next((explorer_pages[i] for i in explorer_pages if i == page_id), None)
-                if page:
+                if new_page:
                     add_message("页面详情如下：" + str(new_page), session_id)
                 else:
                     add_message("未找到有效页面", session_id)
@@ -284,16 +318,38 @@ def execute_solution(solution, page, key, explorer_pages, vuln_db):
 
             elif summary_xml:
                 summary = xmltodict.parse(summary_xml.group(1))['summary']
+                # 模型可能直接输出纯文本 <summary>xxx</summary>，规范化为 dict，
+                # 否则调用方的 summary.get 会 AttributeError
+                if not isinstance(summary, dict):
+                    summary = {
+                        "vuln": "False",
+                        "findFlag": "False",
+                        "desc": str(summary),
+                        "flag": "",
+                    }
 
-                if summary['vuln'] == 'True' and not all_results:
+                if summary.get('vuln') == 'True' and not all_results:
                     all_results = [f'存在{vuln}漏洞']
                 summary['vuln_type'] = vuln
                 summary['request'] = json.dumps(page['request'])
-                if "flag" in summary and summary['flag']:
+                if summary.get('flag'):
                     flagUtil.set_flag(summary['flag'])
                     break
-                if (config.NEED_FLAG and summary['vuln'] == "True" and not "findFlag" in summary) or ("needDeep" in summary and summary['needDeep'] == 'True') or ( vuln =='OTHER' ):
-                    add_message(need_flag_text.format(knowledge="\n".join([f"{i['id']}: {i['desc']}" for i in knowledge_base]), pages="\n".join([f"{i}: {explorer_pages[i]['name']} {explorer_pages[i]['key']}" for i in explorer_pages])), session_id)
+
+                # 是否还需要继续深入以获取 flag。
+                # 原实现里的 `or vuln == 'OTHER'` 恒为真，导致 OTHER 永不收敛，
+                # 会白跑满 max_steps 并把已经得出的结论覆盖成 vuln=False。
+                need_more = (
+                    config.NEED_FLAG
+                    and summary.get('vuln') == 'True'
+                    and not summary.get('findFlag')
+                ) or summary.get('needDeep') == 'True'
+                if need_more and need_flag_injections < max_need_flag_injections:
+                    need_flag_injections += 1
+                    add_message(need_flag_text.format(
+                        knowledge="\n".join([f"{i['id']}: {i['desc']}" for i in knowledge_base]),
+                        pages="\n".join([f"{i}: {explorer_pages[i]['name']} {explorer_pages[i]['key']}" for i in explorer_pages]),
+                    ), session_id)
                 else:
                     break
 

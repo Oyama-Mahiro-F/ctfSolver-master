@@ -37,9 +37,13 @@ class AgentCapability:
 class AgentRegistry:
     """Agent注册表 - 管理所有注册的AI Agent"""
     
-    def __init__(self):
+    def __init__(self, heartbeat_timeout: Optional[float] = None):
         self.agents: Dict[str, AgentCapability] = {}
         self.agent_callbacks: Dict[str, Callable] = {}
+        # None 表示不做过期剔除：本框架的 Agent 都在当前进程内注册、始终存活。
+        # 原实现硬编码 60 秒超时且无人调用 update_heartbeat，
+        # 注册 60 秒后所有 Agent 都被判为 error，调度永久停摆。
+        self.heartbeat_timeout = heartbeat_timeout
     
     def register(self,
                  agent_id: str,
@@ -101,8 +105,9 @@ class AgentRegistry:
         current_time = time.time()
         
         for agent in self.agents.values():
-            # 检查心跳（超过60秒未心跳认为离线）
-            if current_time - agent.last_heartbeat > 60:
+            # 心跳过期检查（默认关闭，见 __init__ 注释）
+            if (self.heartbeat_timeout is not None
+                    and current_time - agent.last_heartbeat >= self.heartbeat_timeout):
                 agent.status = "error"
                 continue
             
@@ -133,6 +138,8 @@ class AgentRegistry:
         
         agent.current_tasks += 1
         agent.status = "busy"
+        # 任务分配即视为该 Agent 存活，刷新心跳
+        self.update_heartbeat(agent_id)
         return True
     
     def release_task(self, agent_id: str):
@@ -145,6 +152,7 @@ class AgentRegistry:
             agent.current_tasks -= 1
         if agent.current_tasks == 0:
             agent.status = "idle"
+        self.update_heartbeat(agent_id)
     
     def get_agent(self, agent_id: str) -> Optional[AgentCapability]:
         """获取Agent"""
@@ -271,13 +279,10 @@ class Orchestrator:
             ]
             
             if not stage_tasks:
-                # 当前阶段没有任务，检查是否可以进入下一阶段
-                completed_stage_tasks = [
-                    t for t in self.task_queue.get_tasks_by_type(current_stage)
-                    if t.status == TaskStatus.COMPLETED
-                ]
-                
-                if completed_stage_tasks and current_stage_index < len(stages) - 1:
+                # 当前阶段没有待执行任务：直接推进到下一阶段。
+                # 原实现要求“该阶段必须有已完成任务”才推进，
+                # 当某阶段完全没有任务时（例如只有 scan/exploit）会永久卡死。
+                if current_stage_index < len(stages) - 1:
                     current_stage_index += 1
                     logger.info(f"进入下一阶段: {stages[current_stage_index]}")
                 else:
@@ -316,12 +321,17 @@ class Orchestrator:
             # 让主协调Agent决定如何分配任务
             # 这里简化处理，实际应该调用主Agent的决策函数
             available_agents = self.agent_registry.get_available_agents()
+            assigned = False
             if available_agents:
                 # 选择最合适的Agent
                 selected_agent = min(available_agents, key=lambda a: a.current_tasks)
                 if self.agent_registry.assign_task(selected_agent.agent_id):
                     self.task_queue.start_task(task.id, selected_agent.agent_id)
                     asyncio.create_task(self._execute_task(task, selected_agent.agent_id))
+                    assigned = True
+            if not assigned:
+                # 未能分配时必须重新入队，否则任务被弹出后永久丢失
+                self.task_queue.requeue_task(task)
             
             await asyncio.sleep(0.1)
     
@@ -336,23 +346,18 @@ class Orchestrator:
                 await asyncio.sleep(1)
                 continue
             
-            # 根据任务类型决定执行模式
-            if task.task_type in ["recon", "scan"]:
-                # 侦察和扫描任务可以并行执行
-                available_agents = self.agent_registry.get_available_agents(task.task_type)
-                if available_agents:
-                    selected_agent = min(available_agents, key=lambda a: a.current_tasks)
-                    if self.agent_registry.assign_task(selected_agent.agent_id):
-                        self.task_queue.start_task(task.id, selected_agent.agent_id)
-                        asyncio.create_task(self._execute_task(task, selected_agent.agent_id))
-            else:
-                # 其他任务按流水线执行
-                available_agents = self.agent_registry.get_available_agents(task.task_type)
-                if available_agents:
-                    selected_agent = min(available_agents, key=lambda a: a.current_tasks)
-                    if self.agent_registry.assign_task(selected_agent.agent_id):
-                        self.task_queue.start_task(task.id, selected_agent.agent_id)
-                        asyncio.create_task(self._execute_task(task, selected_agent.agent_id))
+            # 根据任务类型选择 Agent（recon/scan 可并行，其余同样按能力匹配）
+            available_agents = self.agent_registry.get_available_agents(task.task_type)
+            assigned = False
+            if available_agents:
+                selected_agent = min(available_agents, key=lambda a: a.current_tasks)
+                if self.agent_registry.assign_task(selected_agent.agent_id):
+                    self.task_queue.start_task(task.id, selected_agent.agent_id)
+                    asyncio.create_task(self._execute_task(task, selected_agent.agent_id))
+                    assigned = True
+            if not assigned:
+                # 原实现在能力不匹配时只 sleep，任务被丢弃且永不重试
+                self.task_queue.requeue_task(task)
             
             await asyncio.sleep(0.1)
     

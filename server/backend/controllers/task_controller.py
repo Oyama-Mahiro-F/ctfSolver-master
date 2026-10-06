@@ -74,7 +74,7 @@ def get_task(task_id):
 def create_task():
     """创建新任务"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
         if not data:
             return jsonify({
                 'success': False,
@@ -132,7 +132,7 @@ def update_task(task_id):
                 'message': '任务不存在'
             }), 404
         
-        data = request.get_json()
+        data = request.get_json(silent=True)
         if not data:
             return jsonify({
                 'success': False,
@@ -216,8 +216,10 @@ def toggle_task_running(task_id):
                 'message': '任务不存在'
             }), 404
         
-        # 切换运行状态
+        # 切换运行状态，并同步 agent 轮询所依赖的 status 字段
+        # （agent 只按 status=pending 领取任务，不同步会导致“停止”按钮无效）
         task.is_running = not task.is_running
+        task.status = 'running' if task.is_running else 'pending'
         
         db.session.commit()
         

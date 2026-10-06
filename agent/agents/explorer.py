@@ -132,15 +132,19 @@ def guess_path(url):
     # 创建线程池进行并发请求
     def check_path(p):
         url = f"{root_url}{p}"
-        request_json = {"method":"OPTIONS", "url": url}
-        result = request.run(request_json)
-        if result['status'] == 200 or result['status'] == 405:
-            if len(result['content']) == 0 or result['status'] == 405:
-                result = request.run({"method":"GET", "url": url})
-                if result['status'] in [404, 403] or result['content'] == 0:
-                    return
+        result = request.run({"method": "OPTIONS", "url": url})
+        status = result.get('status', 0)
+        content = result.get('content', '') or ''
+        if status in (200, 405):
+            if not content or status == 405:
+                result = request.run({"method": "GET", "url": url})
+                status = result.get('status', 0)
+                content = result.get('content', '') or ''
+                if status in (404, 403) or not content:
+                    # 显式返回空列表，避免调用方 extend(None) 触发 TypeError
+                    return []
             logger.info(f"发现新路径：{url}")
-            return result['history']
+            return result.get('history') or []
         return []
 
     # 使用concurrent.futures而不是asyncio来处理并发
@@ -247,7 +251,8 @@ def explore_page(page, key, vuln, session_id):
         js_info = explore_all_js(page)
         js_info = "\n".join([f"js文件url：{url}\n该js中的接口说明：{info}" for url, info in js_info.items()])
 
-        add_message(message.format(url=page.get("response", "")['url'], response=page.get("response", "")['content'], key=key, vuln=vuln, js_info=js_info), session_id=session_id)
+        page_response = page.get("response") or {}
+        add_message(message.format(url=page_response.get('url', ''), response=page_response.get('content', ''), key=key, vuln=vuln, js_info=js_info), session_id=session_id)
     if 'vuln' in page:
         page_desc = "尽可能多的访问新网页或对api发送网络请求，当前页面存在漏洞，必须使用已经探测到的漏洞信息进行更多页面的发现，不可以更改载荷"
     else:

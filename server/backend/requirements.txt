@@ -3,3 +3,6 @@ Flask-SQLAlchemy==3.0.5
 Flask-CORS==4.0.0
 SQLAlchemy==1.4.53
 typing-extensions==4.7.1
+# 可选：仅在使用 Celery 异步任务（tasks.py）时需要；不安装也不影响 REST API
+celery>=5.3.0
+redis>=5.0.0

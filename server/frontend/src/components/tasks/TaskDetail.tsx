@@ -1,6 +1,5 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { useState, useEffect } from 'react';
-import { useApi } from '@/hooks/useApi';
 import { taskApi, vulnApi, pageApi, messageApi } from '@/services/api';
 import type { Task, Vuln, Page, Message } from '@/types';
 import { cn } from '@/lib/utils';

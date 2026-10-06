@@ -9,7 +9,7 @@ process_bp = Blueprint('process', __name__, url_prefix='/api/process')
 def create_process(process_id):
     """创建一个新的process，使用路径中的process_id"""
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         # 可选字段
         addition = data.get('addition', None)
         # 默认状态为 run
@@ -52,7 +52,10 @@ def add_process_message(process_id):
     """为指定process新增一条message（History）"""
     try:
         process = Process.query.get(process_id)
-        data = request.get_json() or {}
+        if not process:
+            return jsonify({'success': False, 'message': '未找到对应的process'}), 404
+
+        data = request.get_json(silent=True) or {}
         metadata = data.get('metadata', {})
 
         # 创建新的历史记录，直接将传入的metadata赋值
@@ -77,7 +80,8 @@ def get_process_status(process_id):
     try:
         process = Process.query.get(process_id)
         if not process:
-            return jsonify({'success': True, 'message': '未找到对应的process'}), 404
+            # agent 端仅依据 404 状态码判断是否需要创建，成功标志应为 False
+            return jsonify({'success': False, 'message': '未找到对应的process'}), 404
 
         return jsonify({'success': True, 'data': {'status': process.status}, 'message': '获取状态成功'}), 200
     except Exception as e:
@@ -91,7 +95,7 @@ def update_process_status(process_id):
         if not process:
             return jsonify({'success': False, 'message': '未找到对应的process'}), 404
 
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         new_status = data.get('status')
         if new_status not in {'run', 'pause'}:
             return jsonify({'success': False, 'message': '状态非法，仅支持 run/pause'}), 400

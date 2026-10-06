@@ -7,7 +7,7 @@ __pycache__/
 venv/
 env/
 ENV/
-.venv
+.venv/
 
 # IDE
 .vscode/
@@ -24,6 +24,7 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+instance/
 
 # Logs
 *.log
@@ -38,10 +39,21 @@ dist/
 dist-ssr/
 
 # Temporary files
+# 注意：不要使用通用的 tasks/、temp/，否则会误伤
+# server/frontend/src/components/tasks/ 这类源码目录
 *.tmp
-temp/
-tasks/
+agent/temp/
+agent/config/temp/
 
-# Config files with sensitive data
-config/key.txt
-config/chat.db
+# 测试产物（临时目录固定落在仓库内，见 tests/conftest.py）
+.pytest-tmp/
+.pytest_cache/
+pytest-cache-files-*/
+
+# Sensitive / generated runtime files
+# 注意：带路径分隔符的规则是锚定到本文件所在目录的，
+# 因此 agent/config/* 必须显式写出（原来的 `config/key.txt` 匹配不到它）。
+agent/config/key.txt
+agent/config/chat.db
+agent/tasks/
+server/backend/instance/

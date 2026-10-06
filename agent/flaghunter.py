@@ -46,6 +46,8 @@ class FlagHunter():
         self.explorer_pages = []
         self.detect_pages = []
         self.vuln_pages = []
+        self.explore_done = False  # 页面探索是否已结束，用于让检测循环正常退出
+        self.new_vuln = False
         if not os.path.exists(self.key_file):
             open(self.key_file, "w").close()
         if not os.path.exists(self.key_simple_file):
@@ -168,6 +170,11 @@ class FlagHunter():
         except Exception as e:
             traceback.print_exc()
             raise e
+        finally:
+            # 无论探索成功还是异常，都要标记探索阶段结束，
+            # 否则 detect_page() 的循环永远不会退出，任务无法结束。
+            self.explore_done = True
+            logger.info("页面探索阶段结束")
 
 
     def poc_scan(self, page):
@@ -326,23 +333,26 @@ class FlagHunter():
 
         while True:
             for p in self.explorer_pages:
+                # 已检测过的页面直接跳过，避免重复上报状态
+                if p in self.detect_pages:
+                    continue
+
                 vuln_count = 0
-                if not p in self.detect_pages:
-                    if agent_manager.current_task_id:
-                        detect_message = agent_manager.send_pure_message_with_status(
-                            agent_manager.current_task_id,
-                            f"🔍 开始对 {p['name']} 页面进行漏洞检测",
-                            "running"
-                        )
-                    logger.info(f"检测页面：{p['name']}")
-                    if p['response']['status'] not in config.IGNORE_STATUS_LIST:
-                        vuln_count = 0
-                        vuln_count += self.poc_scan(p)
-                        if not config.FLAG or not config.NEED_FLAG:
-                            vuln_count += self.llm_scan(p)
-                        if vuln_count:
-                            self.new_vuln = True
-                    self.detect_pages.append(p)
+                if agent_manager.current_task_id:
+                    detect_message = agent_manager.send_pure_message_with_status(
+                        agent_manager.current_task_id,
+                        f"🔍 开始对 {p['name']} 页面进行漏洞检测",
+                        "running"
+                    )
+                logger.info(f"检测页面：{p['name']}")
+                if p['response']['status'] not in config.IGNORE_STATUS_LIST:
+                    vuln_count += self.poc_scan(p)
+                    if not config.FLAG or not config.NEED_FLAG:
+                        vuln_count += self.llm_scan(p)
+                    if vuln_count:
+                        self.new_vuln = True
+                self.detect_pages.append(p)
+
                 # 漏洞检测完成，更新消息状态为finish
                 if detect_message and agent_manager.current_task_id:
                     agent_manager.update_pure_message_status(
@@ -352,6 +362,13 @@ class FlagHunter():
                     )
                 if config.FLAG:
                     flagUtil.submit_flag()
+
+            # 探索已结束且所有已发现页面都检测完毕时退出。
+            # 否则本协程永不返回，hunt() 中的 gather 会一直阻塞，任务无法结束。
+            if self.explore_done and all(p in self.detect_pages for p in self.explorer_pages):
+                logger.info(f"全部 {len(self.detect_pages)} 个页面检测完成，漏洞检测阶段结束")
+                break
+
             await asyncio.sleep(1)
 
 
@@ -382,10 +399,24 @@ class FlagHunter():
             # 运行任务直到完成
             loop.run_until_complete(asyncio.gather(*tasks))
 
+        except flagUtil.FlagSubmissionException:
+            # 找到并提交 flag 后主动中止本次任务，属于正常流程
+            logger.info("Flag 已提交，中止本次夺旗任务")
         except Exception as e:
-            pass
+            logger.error(f"夺旗任务执行异常: {e}")
+            logger.error(traceback.format_exc())
 
         finally:
+            # 收尾：取消仍在运行的协程，避免 "Task was destroyed but it is pending"
+            try:
+                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception as e:
+                logger.warning(f"清理未完成的协程时出错: {e}")
+
             # 清理事件循环
             loop.close()
             asyncio.set_event_loop(None)
@@ -462,6 +493,13 @@ def main(name=None, challenge_code=None, api_token=None, mode=None):
 
     """主函数，处理agent注册和心跳"""
     logger.info("ctfSolver启动中...")
+
+    if not config.API_KEY:
+        logger.error(
+            "未配置任何 LLM API Key。请先设置环境变量（例如 DEEPSEEK_API_KEY），"
+            "或在 agent/config/config.py 中填写对应 Key 后重试。"
+        )
+        sys.exit(1)
 
     # 注册信号处理器
     def signal_handler(signum, frame):

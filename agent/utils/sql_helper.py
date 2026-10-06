@@ -1,5 +1,6 @@
 import sqlite3
 from config.config import DB_PATH
+from utils.logger import logger
 
 class SQLiteHelper:
     @staticmethod
@@ -20,8 +21,8 @@ class SQLiteHelper:
             result = cursor.fetchall()
             return result
         except sqlite3.Error as e:
-            raise e
-            return None
+            logger.error(f"查询失败: {e}")
+            raise
         finally:
             cursor.close()
             conn.close()
@@ -38,9 +39,9 @@ class SQLiteHelper:
             conn.commit()
             return True
         except sqlite3.Error as e:
-            raise e
+            logger.error(f"写入失败: {e}")
             conn.rollback()
-            return False
+            raise
         finally:
             cursor.close()
             conn.close()

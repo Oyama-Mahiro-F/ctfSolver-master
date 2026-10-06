@@ -40,7 +40,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.proxy_request('DELETE')
         else:
             self.send_error(404)
-    
+
+    def do_PATCH(self):
+        """处理PATCH请求（前端切换任务运行状态使用）"""
+        if self.path.startswith('/api/'):
+            self.proxy_request('PATCH')
+        else:
+            self.send_error(404)
+
+    def do_OPTIONS(self):
+        """处理CORS预检请求，否则浏览器会因 501 拦截 PATCH/PUT"""
+        if not self.path.startswith('/api/'):
+            self.send_error(404)
+            return
+        origin = self.headers.get('Origin', '*')
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', origin)
+        self.send_header('Access-Control-Allow-Credentials', 'true')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', self.headers.get('Access-Control-Request-Headers', 'Content-Type, Authorization'))
+        self.end_headers()
+
     def proxy_request(self, method):
         """代理请求到后端"""
         try:
@@ -67,11 +87,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # 返回响应
             self.send_response(response.status_code)
             
-            # 复制响应头
+            # 复制响应头。
+            # requests 会自动解压 gzip，若原样透传 Content-Encoding/Content-Length，
+            # 客户端会按压缩数据的长度解析已解压的内容而出错，因此这里剔除后重新计算长度。
             for key, value in response.headers.items():
-                if key.lower() not in ['connection', 'transfer-encoding']:
+                if key.lower() not in ['connection', 'transfer-encoding', 'content-encoding', 'content-length']:
                     self.send_header(key, value)
-            
+
+            self.send_header('Content-Length', str(len(response.content)))
             self.end_headers()
             self.wfile.write(response.content)
             

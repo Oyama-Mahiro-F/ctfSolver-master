@@ -128,7 +128,7 @@ def get_title(resp):
         try:
             content = resp.content.decode()
         except:
-            content = resp.content.decode("GBK", "ignored")
+            content = resp.content.decode("GBK", "ignore")
         title = re.findall("<title>(.*?)</title>", content)[0]
     except:
         title = "[空标题]"

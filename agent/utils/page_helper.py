@@ -25,10 +25,14 @@ def get_parent_page(page_id: str) -> dict:
         FROM pages WHERE id = ?
     """
     result = SQLiteHelper.fetch_one(sql, (page_id,))
-    if result:
-        page = json.loads(open(result[0], "r").read())
-        return page
-    else:
+    parent_path = result[0] if result else None
+    # parent_path 可能为 NULL、不存在或来自其它机器（历史数据里存的是绝对路径），必须容错
+    if not parent_path or not os.path.exists(parent_path):
+        return {}
+    try:
+        with open(parent_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
         return {}
 
 

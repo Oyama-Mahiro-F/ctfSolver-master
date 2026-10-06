@@ -47,7 +47,9 @@ export interface Agent {
   name: string;
   host: string;
   port: number;
-  status: 'online' | 'offline';
+  // agent 端实际上报的是业务状态（idle/running/exploring/detecting/error 等），
+  // 只有显式 offline 才代表离线
+  status: 'online' | 'offline' | 'idle' | 'running' | 'exploring' | 'detecting' | 'busy' | 'error';
   capabilities: Record<string, any>;
   last_heartbeat?: string;
   registered_at: string;

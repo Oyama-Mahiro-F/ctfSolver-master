@@ -48,7 +48,7 @@ class ContestHunter:
         # 新增：并发与后端参数、作业状态
         self.server_url = config.SERVER_URL
         self.max_concurrency = 3
-        self.max_runtime_seconds = 30 * 60  # 10分钟
+        self.max_runtime_seconds = 30 * 60  # 单题最长运行时间（秒）
         self.active_jobs: Dict[str, Dict] = {}  # {challenge_code: {'proc': Popen, 'agent_id': str, 'start_ts': float}}
         self.dispatched_codes: set[str] = set()  # 本轮已派发的题目
         # 新增：每题运行次数与提示获取记录
@@ -208,7 +208,7 @@ class ContestHunter:
                         continue
 
                     # 运行次数 +1
-                    count = self.run_counts.get(code, 0)
+                    count = self.run_counts.get(code, 0) + 1
                     self.run_counts[code] = count
     
     

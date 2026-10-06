@@ -157,6 +157,15 @@ class TaskQueue:
         
         return True
     
+    def requeue_task(self, task: Task) -> None:
+        """把已从优先级队列弹出、但本次未能执行的任务重新入队。
+
+        调度器在“没有可用 Agent”时若只 sleep+continue，任务既不在队列中
+        也没在运行，会被永久丢弃（子任务依赖它时会一起卡死）。
+        """
+        if task.status == TaskStatus.PENDING and task.id not in self.running_tasks:
+            heapq.heappush(self.priority_queue, task)
+
     def start_task(self, task_id: str, agent_id: Optional[str] = None) -> bool:
         """
         标记任务为运行中

@@ -5,6 +5,20 @@ import { cn } from '@/lib/utils';
 import { RippleButton } from '@/registry/magicui/ripple-button';
 import { GlassCard } from '@/components/ui/liquid-glass';
 
+/**
+ * agent 端上报的 capabilities 是字符串数组，而类型声明为对象。
+ * 直接 Object.keys 数组会渲染出 "0"/"1"/"2"，这里统一成字符串列表。
+ */
+function toCapabilityList(caps: unknown): string[] {
+  if (Array.isArray(caps)) {
+    return caps.map((item) => String(item));
+  }
+  if (caps && typeof caps === 'object') {
+    return Object.keys(caps as Record<string, unknown>);
+  }
+  return [];
+}
+
 export function AgentList() {
   const { items: agents, loading, error, refresh } = useApiList<Agent>(
     () => agentApi.getAgents(),
@@ -59,12 +73,12 @@ export function AgentList() {
                 <span
                   className={cn(
                     'px-3 py-1 rounded-full text-xs font-medium',
-                    agent.status === 'online'
+                    agent.status !== 'offline'
                       ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
                       : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
                   )}
                 >
-                  {agent.status === 'online' ? '在线' : '离线'}
+                  {agent.status !== 'offline' ? `在线 (${agent.status})` : '离线'}
                 </span>
               </div>
 
@@ -82,13 +96,13 @@ export function AgentList() {
                 <div>任务数: {agent.tasks_count || 0}</div>
               </div>
 
-              {Object.keys(agent.capabilities || {}).length > 0 && (
+              {toCapabilityList(agent.capabilities).length > 0 && (
                 <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-700">
                   <div className="text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-2">
                     能力:
                   </div>
                   <div className="flex flex-wrap gap-1">
-                    {Object.keys(agent.capabilities).map((key) => (
+                    {toCapabilityList(agent.capabilities).map((key) => (
                       <span
                         key={key}
                         className="px-2 py-1 bg-zinc-100 dark:bg-zinc-700 rounded text-xs"

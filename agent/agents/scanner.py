@@ -19,7 +19,8 @@ def vuln_scan(page, key, simple_key, explorer_pages, task_id):
         content=f"🎯 开始获取 {page['name']} 页面的漏洞检测思路",
         status="running"
     )
-    session_id = solution_message.get('id')
+    # send_pure_message_with_status 在后端不可用时会返回 None，必须先兜底
+    session_id = (solution_message or {}).get('id')
     
     try:
         solutions = get_solutions(page, simple_key, session_id=session_id)
@@ -40,8 +41,11 @@ def vuln_scan(page, key, simple_key, explorer_pages, task_id):
         all_results = []
         vulns = task_helper.get_all_vulns(task_id)
 
-        # 创建线程池执行器
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        # 创建线程池执行器。
+        # 注意：不能使用 `with ThreadPoolExecutor(...)`，因为其退出时会 shutdown(wait=True)，
+        # 只要有一个检测线程卡住（LLM 重试最长 200s+），整体就会永久阻塞，超时设置形同虚设。
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+        try:
             # 创建任务列表
             future_to_solution = {
                 executor.submit(execute_solution, s, page, key, {str(uuid.uuid4()):explorer_pages[i] for i in range(len(explorer_pages))}, vulns): s
@@ -53,20 +57,20 @@ def vuln_scan(page, key, simple_key, explorer_pages, task_id):
                 s = future_to_solution[future]
                 try:
                     result = future.result(timeout=1200)
-                    # vuln_result = f"是否存在漏洞：{result['vuln']} 是否需要深入利用：{result['needDeep']} 说明：{result['key']}"
                     logger.info(f"检测思路 【{s}】结果：{result}")
                     if result and 'result' in result and result['result']:
-                        all_results.append(result['summary'])
+                        summary = result.get('summary') or {}
+                        all_results.append(summary)
 
-                        if result['summary']['vuln'] == 'True':
+                        if summary.get('vuln') == 'True':
                             sql_helper.SQLiteHelper.insert_record(
                                 table='vulns',
                                 data={
                                     'id': str(uuid.uuid4()),
                                     'task_id': task_id,
-                                    'vuln_type': result['summary']['vuln_type'],
-                                    'desc': result['summary']['desc'],
-                                    'request_json': json.dumps(result['request']),
+                                    'vuln_type': summary.get('vuln_type', ''),
+                                    'desc': summary.get('desc', ''),
+                                    'request_json': json.dumps(result.get('request', {})),
                                 }
                             )
 
@@ -78,6 +82,12 @@ def vuln_scan(page, key, simple_key, explorer_pages, task_id):
                     logger.error(f"执行漏洞检测思路异常: {str(e)}")
                     # 如果有异常，更新执行消息为错误状态
                     continue
+        finally:
+            # 不等待挂住的检测线程，避免永久阻塞
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:  # Python < 3.9 不支持 cancel_futures
+                executor.shutdown(wait=False)
 
 
             

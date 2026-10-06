@@ -6,6 +6,19 @@ import uuid
 
 agent_bp = Blueprint('agent', __name__, url_prefix='/api/agents')
 
+
+def _parse_datetime(value, default=None):
+    """解析 ISO 时间字符串，失败时返回 default。
+
+    非法时间输入不应导致 500，因此统一在这里兜底。
+    """
+    if not value:
+        return default
+    try:
+        return datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except (ValueError, TypeError):
+        return default
+
 @agent_bp.route('', methods=['GET'])
 def get_agents():
     """获取所有Agent"""
@@ -48,7 +61,7 @@ def get_agent(agent_id):
 def register_agent():
     """注册新Agent"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
         if not data:
             return jsonify({
                 'success': False,
@@ -76,11 +89,11 @@ def register_agent():
             last_seen=current_time
         )
         
-        # 设置启动时间
-        if 'start_time' in data:
-            agent.start_time = datetime.fromisoformat(data['start_time'].replace('Z', '+00:00'))
-        else:
-            agent.start_time = current_time
+        # 设置启动时间（兼容顶层 start_time 与 metadata.start_time 两种来源）
+        start_time_raw = data.get('start_time')
+        if not start_time_raw and isinstance(data.get('metadata'), dict):
+            start_time_raw = data['metadata'].get('start_time')
+        agent.start_time = _parse_datetime(start_time_raw, current_time)
         
         # 设置能力和元数据
         if 'capabilities' in data:
@@ -121,7 +134,7 @@ def agent_heartbeat(agent_id):
                 'message': 'Agent不存在'
             }), 404
         
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         current_time = datetime.utcnow()
         
         # 更新心跳时间和状态
@@ -159,7 +172,7 @@ def update_agent(agent_id):
                 'message': 'Agent不存在'
             }), 404
         
-        data = request.get_json()
+        data = request.get_json(silent=True)
         if not data:
             return jsonify({
                 'success': False,
@@ -226,19 +239,23 @@ def get_agents_status():
     """获取所有Agent状态概览"""
     try:
         agents = Agent.query.all()
-        
-        # 统计信息
-        total_agents = len(agents)
-        online_agents = len([a for a in agents if a.status == 'online'])
-        offline_agents = len([a for a in agents if a.status == 'offline'])
-        
-        # 检查超时的Agent（5分钟没有心跳）
+
+        # 先做超时判定再统计，避免同一响应里 statistics 与 agents 自相矛盾
         timeout_threshold = datetime.utcnow() - timedelta(minutes=5)
+        dirty = False
         for agent in agents:
             if agent.last_heartbeat and agent.last_heartbeat < timeout_threshold:
                 if agent.status != 'offline':
                     agent.status = 'offline'
-                    db.session.commit()
+                    dirty = True
+        if dirty:
+            db.session.commit()
+
+        # agent 上报的是 idle/running/exploring/detecting 等业务状态，
+        # 只有显式 offline 才算离线，其余一律视为在线。
+        total_agents = len(agents)
+        offline_agents = len([a for a in agents if a.status == 'offline'])
+        online_agents = total_agents - offline_agents
         
         return jsonify({
             'success': True,

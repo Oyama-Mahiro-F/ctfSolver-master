@@ -18,36 +18,37 @@ API_KEYS = []
 # 4. GLM (智谱AI): https://open.bigmodel.cn/
 # ============================================
 
-DEEPSEEK_API_URL = "https://api.deepseek.com"
-DEEPSEEK_API_KEY = "sk-676280974f6b4fa58de1c6d79e0f193c"  # 请在此处填入您的DeepSeek API密钥
-DEEPSEEK_API_MODEL_ACTION = "deepseek-chat"
+DEEPSEEK_API_URL = os.environ.get("DEEPSEEK_API_URL", "https://api.deepseek.com")
+# 从环境变量读取，避免明文密钥进入版本库
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_MODEL_ACTION = os.environ.get("DEEPSEEK_API_MODEL", "deepseek-chat")
 
-TENCENT_API_URL = "https://api.lkeap.cloud.tencent.com/v1"
-TENCENT_API_KEY = ""  # 请在此处填入您的腾讯云API密钥
-TENCENT_API_MODEL_ACTION = "deepseek-v3.1-terminus"
+TENCENT_API_URL = os.environ.get("TENCENT_API_URL", "https://api.lkeap.cloud.tencent.com/v1")
+TENCENT_API_KEY = os.environ.get("TENCENT_API_KEY", "")
+TENCENT_API_MODEL_ACTION = os.environ.get("TENCENT_API_MODEL", "deepseek-v3.1-terminus")
 TENCENT_API_RANDOM_KEY = random.choice(API_KEYS) if API_KEYS else ""
 
 
-SILCON_API_URL = "https://api.siliconflow.cn/v1"
-SILCON_API_KEY = ""  # 请在此处填入您的SiliconFlow API密钥
-SILCON_API_MODEL_ACTION = "Pro/deepseek-ai/DeepSeek-V3.1-Terminus"
+SILCON_API_URL = os.environ.get("SILCON_API_URL", "https://api.siliconflow.cn/v1")
+SILCON_API_KEY = os.environ.get("SILCON_API_KEY", "")
+SILCON_API_MODEL_ACTION = os.environ.get("SILCON_API_MODEL", "Pro/deepseek-ai/DeepSeek-V3.1-Terminus")
 
 # API配置
-API_URL = "https://api.deepseek.com"
-API_KEY = ""  # 通用API密钥配置
-API_MODEL_ACTION = "deepseek-chat"
+API_URL = os.environ.get("API_URL", "https://api.deepseek.com")
+API_KEY = os.environ.get("API_KEY", "")  # 通用API密钥配置
+API_MODEL_ACTION = os.environ.get("API_MODEL", "deepseek-chat")
 
-CONTEST_API_TOKEN = ""  # 比赛API令牌（如果参与比赛）
+CONTEST_API_TOKEN = os.environ.get("CONTEST_API_TOKEN", "")  # 比赛API令牌（如果参与比赛）
 
-GLM_URL = "https://open.bigmodel.cn/api/paas/v4"
-GLM_API_KEY = ""  # 请在此处填入您的GLM API密钥
-GLM_MODEL = "glm-4-long"
+GLM_URL = os.environ.get("GLM_URL", "https://open.bigmodel.cn/api/paas/v4")
+GLM_API_KEY = os.environ.get("GLM_API_KEY", "")
+GLM_MODEL = os.environ.get("GLM_MODEL", "glm-4-long")
 
 NAME = "ctfSolver"
 CHALLENGE_CODE = ""
 
 # Server配置
-SERVER_URL = "http://localhost:5000"  # 后端服务器地址（如果使用本地server，使用localhost；如果使用远程server，请修改为对应地址）
+SERVER_URL = os.environ.get("SERVER_URL", "http://localhost:5000")  # 后端服务器地址，可用环境变量覆盖
 AGENT_VERSION = "1.0.0"  # Agent版本
 HEARTBEAT_INTERVAL = 30  # 心跳间隔（秒）
 AGENT_CAPABILITIES = ["web_scan", "vuln_detect", "flag_search", "page_explore"]  # Agent能力

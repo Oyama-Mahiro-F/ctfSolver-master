@@ -68,17 +68,23 @@ def need_detect(request_json):
 
 def simple_detect(request_json, response, param=None):
     if param.get("type", "normal") == 'normal':
+        request_template = (param or {}).get('request')
+        if not request_template:
+            return "缺少 request 模板：请在 <tool> 中提供 <request> 子标签"
         try:
-            request_json = json.loads(param['request'])
-        except json.JSONDecodeError:
+            request_json = json.loads(request_template)
+        except (json.JSONDecodeError, TypeError):
             return "提供的 request 模板不是合法的 JSON 格式，请检查后重试"
         
         try:
-            if param.get("value", "").lower() == "default":
+            value_spec = param.get("value") or ""
+            if value_spec.lower() == "default":
                 # 使用LFI载荷进行测试
                 payload = lfi_payload
+            elif not value_spec:
+                return "缺少 value 参数：请填写 DEFAULT 或自定义载荷（逗号分隔）"
             else:
-                payload = param.get("value").split(",")
+                payload = value_spec.split(",")
                 # if "." in param.get('value'):
                 #     payload = [param.get("value"), ".".join((param.get("value").split(".")[:-1]))]
 
@@ -92,7 +98,7 @@ def simple_detect(request_json, response, param=None):
                     return
                 try:
                     # 构造新的请求
-                    new_request = json.loads(param['request'].replace("{LFI}", str(test_payload)))
+                    new_request = json.loads(request_template.replace("{LFI}", str(test_payload)))
                     
                     # 发送请求并获取响应
                     new_response = request.run(new_request)
@@ -130,9 +136,12 @@ def simple_detect(request_json, response, param=None):
             return f"LFI测试过程中发生错误: {str(e)}"
     
     elif param.get("type") == 'url':
+        request_template = (param or {}).get('request')
+        if not request_template:
+            return "缺少 request 模板：请在 <tool> 中提供 <request> 子标签"
         try:
-            request_json = json.loads(param['request'])
-        except json.JSONDecodeError:
+            request_json = json.loads(request_template)
+        except (json.JSONDecodeError, TypeError):
             return "提供的 request 模板不是合法的 JSON 格式，请检查后重试"
         
         try:
@@ -157,7 +166,7 @@ def simple_detect(request_json, response, param=None):
                     return
                 try:
                     # 构造新的请求
-                    new_request = json.loads(param['request'].replace("{LFI}", str(test_payload)))
+                    new_request = json.loads(request_template.replace("{LFI}", str(test_payload)))
                     
                     # 发送请求并获取响应
                     new_response = request.run(new_request)

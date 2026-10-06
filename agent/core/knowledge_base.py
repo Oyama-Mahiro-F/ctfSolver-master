@@ -3,6 +3,7 @@
 """
 import json
 import time
+import uuid
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -75,7 +76,9 @@ class SharedContext:
             str: 条目ID
         """
         if entry_id is None:
-            entry_id = f"{entry_type.value}_{int(time.time() * 1000)}"
+            # 原实现用毫秒时间戳，同一毫秒内的同类型条目会生成相同 id，
+            # 导致后写入的条目覆盖前一条并破坏索引
+            entry_id = f"{entry_type.value}_{uuid.uuid4().hex}"
         
         entry = KnowledgeEntry(
             id=entry_id,

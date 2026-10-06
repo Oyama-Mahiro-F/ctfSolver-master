@@ -8,7 +8,6 @@ import traceback
 import uuid
 from datetime import datetime
 
-import psutil
 import requests
 from config import config
 from utils.logger import logger
@@ -24,6 +23,8 @@ class AgentManager:
         self.start_time = datetime.now()
         self.current_task_id = None
         self.task_check_interval = 5  # 检查任务的间隔（秒）
+        # 任务监控线程自己的停止信号，避免只依赖 is_running（它由心跳循环控制）
+        self.monitor_stop_event = threading.Event()
         
     def register_agent(self):
         """注册Agent到服务器"""
@@ -478,7 +479,13 @@ class AgentManager:
                 logger.info(f"任务完成，未找到flag")
             
         except Exception as e:
-            pass
+            # 原实现是 pass，任务异常被静默吞掉且状态永远停留在 running
+            logger.error(f"处理任务 {task_id} 失败: {e}")
+            logger.error(traceback.format_exc())
+            try:
+                self.update_task_status(task_id, status="failed")
+            except Exception:
+                pass
         finally:
             # 清理当前任务状态
             self.current_task_id = None
@@ -489,7 +496,7 @@ class AgentManager:
         """任务监控循环"""
         logger.info("启动任务监控循环")
         
-        while self.is_running:
+        while self.is_running and not self.monitor_stop_event.is_set():
             try:
                 # 检查分配给当前Agent的pending状态任务
                 tasks = self.get_assigned_tasks()
@@ -501,28 +508,37 @@ class AgentManager:
                     self.process_task(task)
 
 
-                # 等待一段时间再检查
-                time.sleep(self.task_check_interval)
-                
+                # 等待一段时间再检查（用 Event.wait 以便被立即唤醒退出）
+                if self.monitor_stop_event.wait(self.task_check_interval):
+                    break
+
             except requests.exceptions.ConnectionError:
                 # Server不可用时，静默等待
-                time.sleep(self.task_check_interval)
+                if self.monitor_stop_event.wait(self.task_check_interval):
+                    break
             except Exception as e:
                 traceback.print_exc()
                 logger.error(f"任务监控循环异常: {str(e)}")
-                time.sleep(10)  # 出错时等待更长时间
+                if self.monitor_stop_event.wait(10):  # 出错时等待更长时间
+                    break
 
     def start_task_monitor(self):
         """启动任务监控"""
         if not self.task_monitor_thread or not self.task_monitor_thread.is_alive():
+            self.monitor_stop_event.clear()
             self.task_monitor_thread = threading.Thread(target=self.task_monitor_loop, daemon=True)
             self.task_monitor_thread.start()
             logger.info("任务监控已启动")
 
     def stop_task_monitor(self):
         """停止任务监控"""
+        self.monitor_stop_event.set()
         if self.task_monitor_thread and self.task_monitor_thread.is_alive():
             self.task_monitor_thread.join(timeout=5)
+            if self.task_monitor_thread.is_alive():
+                # 正在 process_task 中时无法立即退出（任务可能很长），如实记录
+                logger.warning("任务监控线程仍在执行当前任务，将在任务结束后退出")
+                return
         logger.info("任务监控已停止")
 
     def unregister_agent(self):
