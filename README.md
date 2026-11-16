@@ -40,6 +40,7 @@ ctfSolver 面向 CTF 竞赛与 Web 渗透场景，由五个智能体协同完成
 | 编排 | `agent/core/task_queue.py` | 9 | 任务队列调度 |
 | 配置 | `agent/config/config.py` | 37 | 模型与运行参数统一配置 |
 | 入口 | `agent/flaghunter.py` | 72 | 启动流程与异常退出处理 |
+| 构建 | `server/frontend/Dockerfile` | — | 前端镜像改为直接 `npm build`，原实现依赖仓库里不存在的 `dist.zip`，`docker build` 必然失败 |
 
 ### 两个花时间最多的问题
 
