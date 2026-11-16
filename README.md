@@ -1,251 +1,160 @@
-# CTF自动解题工具
+# ctfSolver · 二次开发版
 
-## 项目背景
+大语言模型驱动的 CTF 自动解题框架。本仓库在原版基础上**修复了运行链路**、**重写了工具执行层**，并**补齐了自动化测试套件**。
 
-本项目是**腾讯云AI渗透智能渗透黑客松**比赛的参赛作品，由西安交通大学的**xjtuHunter**队伍开发，并获得**第二名**的优异成绩。
+> **原项目**：腾讯云 AI 渗透智能体黑客松参赛作品，由西安交通大学 **xjtuHunter** 队伍开发，获第二名；原维护者九暑（passerW）。
+>
+> **本仓库**：在原版代码上做的修复与增强，全部改动范围见下文「与原版的差异」。原项目作者不对本仓库的改动负责，原版的荣誉与设计归属原作者。
 
-## 腾讯众测官方网站
+---
 
-https://zc.tencent.com
+## 项目概况
 
-## 核心维护者
+ctfSolver 面向 CTF 竞赛与 Web 渗透场景，由五个智能体协同完成「页面探索 → 漏洞扫描 → 解法生成 → 动作执行 → Flag 提取」的闭环。
 
-* 九暑（passerW）
+| 智能体 | 职责 |
+|---|---|
+| `explorer` | 爬取目标页面结构、JS 与 API 端点 |
+| `scanner` | XSS / SQL 注入 / 命令注入 / LFI / IDOR 等漏洞探测 |
+| `solutioner` | 依据扫描结果生成利用思路 |
+| `actioner` | 决定调用哪个工具、按什么顺序执行 |
+| `executor` | 实际执行 HTTP 请求、Python 与 Shell 命令 |
 
+工具层内置 HTTP 请求、Python 执行、Shell 执行、Base64 / JSFuck 解码、PHP Filter Chain 生成等能力，可通过 `agent/config/addons.txt` 注册扩展。仓库同时包含 Flask 后端与前端界面，用于任务下发与进度监控。
 
-## 项目概述
+---
 
-ctfSolver 是一款基于人工智能的 CTF（Capture The Flag）自动解题平台，依托大语言模型的自主探索与推理能力，精准攻克 CTF 赛题中复杂的漏洞利用挑战，能够提供覆盖多场景、多类型漏洞的端到端自动化解题方案，显著提升复杂安全竞技场景下的解题效率与适应性。
+## 与原版的差异
 
+原版在本地运行时会卡在启动链路，任务下发后无法走完一次完整执行。本仓库的改动集中在三处：让链路能跑通、让工具调用可控、让改动可验证。
 
-## 技术亮点
+| 层次 | 主要文件 | 改动行数 | 处理的问题 |
+|---|---|---|---|
+| 工具层 | `agent/addons/request.py` | 226 | 统一 HTTP 请求封装、异常与超时处理 |
+| 工具层 | `agent/addons/run_shell.py` | 88 | 命令执行、超时控制、退出码解析 |
+| 工具层 | `agent/addons/run_python.py` | 57 | 脚本执行与输出长度截断 |
+| 智能体 | `agent/agents/actioner.py` | 138 | 工具调用决策、失败重试与动作收敛 |
+| 智能体 | `agent/agents/poc.py` | 93 | PoC 生成与验证循环 |
+| 智能体 | `agent/agents/vulner.py`、`vulns/*` | 45 起 | 漏洞类型识别与分发，适配新的工具接口 |
+| 编排 | `agent/core/orchestrator.py` | 59 | 多智能体任务流转与状态同步 |
+| 编排 | `agent/core/task_queue.py` | 9 | 任务队列调度 |
+| 配置 | `agent/config/config.py` | 37 | 模型与运行参数统一配置 |
+| 入口 | `agent/flaghunter.py` | 72 | 启动流程与异常退出处理 |
 
-### 🚀 创新架构
-- **多Agent协同工作**：采用explorer、scanner、solutioner、executor、actioner五大核心Agent，各司其职又协同配合
-- **AI驱动决策**：利用大语言模型分析漏洞、生成利用思路和代码
-- **前后端分离**：Flask后端提供API服务，前端界面提供友好的任务管理和监控
+### 两个花时间最多的问题
 
-### ⚡ 核心能力
-- **智能页面探索**：自动爬取和分析目标网站的页面结构、JavaScript文件和API端点
-- **多维度漏洞扫描**：支持XSS、SQL注入、命令注入、LFI、IDOR等多种常见Web漏洞检测
-- **跨场景漏洞利用**：提供不同场景的上下文记忆，组合多类型漏洞解决复杂CTF问题
-- **自动化漏洞利用**：根据漏洞类型自动生成并执行利用脚本
+**一、工具单次返回内容过长，模型注意力被无关信息占据。**
+原版把工具原始输出整段塞回对话，一次页面爬取就能吃掉大半个上下文。改动是在工具层做输出截断与结构化摘要，只把与当前子目标相关的部分交给模型，长输出落到文件里按需再读。
 
-### 🛠️ 工具扩展机制
-- 支持Base64解码、JSFuck解码、PHP Filter Chain生成等安全工具
-- 内置HTTP请求工具、Python代码执行和Shell命令执行功能
-- 支持自定义工具扩展，满足复杂场景需求
+**二、工具调用失败后状态无法回退，链路带着脏状态继续跑。**
+一次请求超时或命令非零退出，后续步骤仍然基于上一次的中间结果推进，错误会一直滚到最后一层。改动是给每步动作保留可回滚的快照，失败时退到上一个一致状态再重试，并设定重试上限避免死循环。
 
-### 🔄 并发处理优化
-- 多线程并发页面探索和漏洞扫描
-- 异步任务处理，提升整体解题效率
-- 线程安全的结果管理和数据处理
+---
 
-## 应用场景
+## 快速开始
 
-- CTF比赛自动化解题
-- 网络安全培训和教育
-- 安全产品评估和测试
-- 漏洞研究和POC开发
+详细步骤见 [`运行指南.md`](运行指南.md)，环境说明见 [`环境说明.md`](环境说明.md)。
 
-## 项目结构
+### 环境
 
-```
-├── agent/              # 核心智能体引擎
-│   ├── addons/         # 工具扩展模块
-│   ├── agents/         # 多Agent功能模块（vuln漏洞提供部分示例）
-│   ├── config/         # 配置文件和资源（知识库提供部分示例）
-│   ├── tasks/          # 任务存储目录
-│   ├── test/           # 单元测试
-│   ├── utils/          # 实用工具函数
-│   ├── contest_hunter.py # 比赛自动化工具
-│   ├── flaghunter.py   # 主要Flag捕获工具
-│   └── requirements.txt # 依赖包
-├── server/             # 服务器端
-│   ├── backend/        # Flask后端服务
-│   ├── frontend/       # 前端界面
-│   └── docker-compose.yaml # Docker部署配置
-└── README.md           # 项目说明
-```
-
-## 功能特性
-
-### 核心功能
-- **页面探索**：自动爬取和分析目标网站的页面结构
-- **解题支持**：根据题目场景自动生成利用脚本和漏洞利用思路
-- **漏洞利用**：根据漏洞利用思路自动完成Payload构造、攻击链组合与Flag提取等完整攻击链条。
-
-### AI Agent模块
-- **explorer**：页面探索Agent
-- **scanner**：漏洞扫描Agent
-- **solutioner**：解题Agent
-- **executor**：命令执行Agent
-- **actioner**：动作执行Agent
-
-### 工具扩展
-- Base64解码
-- JSFuck解码
-- PHP Filter Chain生成
-- HTTP请求工具
-- Python代码执行
-- Shell命令执行
-
-## 安装说明
-
-### 环境要求
 - Python 3.8+
-- pip
 - SQLite3
+- 需要大模型 API Key 才能实际解题（DeepSeek 或腾讯云）
 
-### 安装步骤
-
-1. 克隆项目
-```bash
-git clone <项目地址>
-cd ctfSolver
+```powershell
+python -m venv venv
+.\venv\Scripts\python.exe -m pip install -r agent\requirements.txt
+.\venv\Scripts\python.exe -m pip install -r server\backend\requirements.txt
+.\venv\Scripts\python.exe -m pip install pytest
 ```
 
-2. 安装依赖
-```bash
-cd agent
-pip install -r requirements.txt
-```
+### 配置
 
-3. 配置API密钥
-
-编辑`agent/config/config.py`文件，配置API密钥：
+编辑 `agent/config/config.py`，填入模型 API Key 与后端地址：
 
 ```python
-# DeepSeek API配置
 DEEPSEEK_API_KEY = "your-deepseek-api-key"
-
-# 腾讯云API配置
-TENCENT_API_KEY = "your-tencent-api-key"
+SERVER_URL = "http://localhost:5000"
 ```
 
-## 使用方法
+### 运行
 
-### 后端配置
-
-编辑`agent/config/config.py`文件，配置后端服务器地址：
-
-```python
-# 后端服务器配置
-SERVER_URL = "http://backend"  # 后端服务器地址
-```
-
-### 基本使用
-
-1. 启动Flag Hunter
-```bash
+```powershell
 cd agent
 python flaghunter.py --name "ctfSolver" --challengecode "example" --mode "deepseek"
 ```
 
-或者简单启动：
-```bash
-cd agent
-python flaghunter.py
-```
+需要后端界面时，先启动 Flask 服务：
 
-
-
-### 参数说明
-
-- `--name`：Agent名称
-- `--challengecode`：题目代码
-- `--apitoken`：API令牌
-- `--mode`：LLM模式（deepseek, tencent等）
-
-### 前端界面
-
-启动Agent后，可以访问前端界面进行任务下发：
-```
-http://frontend
-```
-
-### 启动日志示例
-
-```
-[INFO] 2025-11-27 14:28:17 [root:config.py:115] 数据库已初始化，路径：/Users/passerw/Documents/ctfSolver2/config/chat.db
-[INFO] 2025-11-27 14:28:17 [root:flaghunter.py:457] ctfSolver启动中...
-[INFO] 2025-11-27 14:28:17 [root:flaghunter.py:468] 正在启动Agent管理器...
-[INFO] 2025-11-27 14:28:17 [root:agent_manager.py:536] 启动Agent管理器
-[INFO] 2025-11-27 14:28:17 [root:agent_manager.py:61] Agent注册成功，ID: 850d7599-c579-4a2f-8ace-f7afc2e7ddfd
-[INFO] 2025-11-27 14:28:17 [root:agent_manager.py:117] 启动心跳循环，间隔: 30秒
-[INFO] 2025-11-27 14:28:17 [root:agent_manager.py:473] 启动任务监控循环
-[INFO] 2025-11-27 14:28:17 [root:agent_manager.py:500] 任务监控已启动
-[INFO] 2025-11-27 14:28:17 [root:agent_manager.py:547] Agent管理器启动成功
-[INFO] 2025-11-27 14:28:17 [root:flaghunter.py:470] Agent管理器启动成功
-[INFO] 2025-11-27 14:28:17 [root:flaghunter.py:474] Agent已就绪，等待任务...
-```
-
-## 工作流程
-
-1. **页面探索**：自动爬取目标网站的所有页面
-2. **漏洞检测**：对每个页面进行漏洞扫描
-3. **漏洞利用**：对发现的漏洞尝试利用
-4. **Flag提取**：从响应中识别并提取Flag提交至后端
-
-## 配置文件
-
-- `agent/config/config.py`：主配置文件
-- `agent/config/pocs/`：POC脚本目录
-- `agent/config/payload/`：Payload模板目录
-- `agent/config/knowledge/`：知识库文件
-
-## 开发说明
-
-### 添加新的Agent模块
-
-1. 在`agent/agents/`目录下创建新的Agent文件
-2. 实现Agent类，继承自基础Agent类
-3. 在`agent/utils/agent_manager.py`中注册新Agent
-
-### 添加新的工具扩展
-
-1. 在`agent/addons/`目录下创建新的工具文件
-2. 实现工具类，包含`run`方法
-3. 在`agent/config/addons.txt`中添加工具信息
-
-
-## 服务器端部署
-
-### Docker部署
-
-1. 进入server目录
-```bash
+```powershell
 cd server
-```
-
-2. 启动Docker容器
-```bash
 docker-compose up -d
 ```
 
-3. 访问前端界面
+---
+
+## 测试
+
+这是本仓库相对原版最主要的补充。原版没有可运行的测试，改完之后无法确认是否引入了回归，所以补了一套。
+
+```powershell
+.\venv\Scripts\python.exe -m pytest
 ```
-http://localhost:85
+
+**51 项测试全部通过**，覆盖 9 个文件：
+
+| 测试文件 | 覆盖范围 |
+|---|---|
+| `tests/conftest.py` | 临时目录、临时 SQLite、公共 fixture |
+| `tests/test_imports.py` | 各模块导入完整性 |
+| `tests/test_core_framework.py` | 核心框架与任务流转 |
+| `tests/test_agent_utils.py` | 智能体工具函数 |
+| `tests/test_agent_backend_integration.py` | 智能体与后端联调 |
+| `tests/test_actioner_loop.py` | actioner 的调用循环与终止条件 |
+| `tests/test_request_addon.py` | HTTP 工具层的异常与超时路径 |
+| `tests/test_vuln_modules.py` | 漏洞模块分发 |
+| `tests/test_backend_api.py` | Flask 后端 REST 接口 |
+
+几点说明：
+
+- 测试**不需要 API Key、不需要联网**，也不会碰仓库自带的数据库
+- 后端用临时 SQLite，智能体用临时目录
+- 临时文件统一落在仓库内的 `.pytest-tmp/`（已忽略）。不要改回系统临时目录——受限环境下那里不可写，SQLite 会直接报 `unable to open database file`
+
+---
+
+## 目录结构
+
+```
+ctfSolver-master/
+├── agent/                    # 智能体核心
+│   ├── addons/               # 工具扩展（HTTP / Python / Shell / 解码器）
+│   ├── agents/               # 五个智能体与漏洞模块
+│   ├── config/               # 配置、POC、Payload、知识库
+│   ├── core/                 # 编排器、任务队列、知识库
+│   ├── utils/                # 公共工具与 Agent 管理器
+│   ├── contest_hunter.py     # 比赛自动化入口
+│   ├── flaghunter.py         # 单题解题入口
+│   └── requirements.txt
+├── server/                   # Flask 后端与前端
+├── tests/                    # 9 个测试文件，51 项用例
+├── 运行指南.md                # 详细启动与排错步骤
+├── 环境说明.md                # 依赖与虚拟环境说明
+└── pytest.ini
 ```
 
-4. 后端API地址
-```
-http://localhost:5000
-```
+---
 
-### 后端服务说明
+## 已知限制
 
-- **Flask应用**：提供RESTful API接口
-- **Celery**：用于异步任务处理
-- **SQLite3**：数据存储
-- **Redis**：Celery消息代理（需要单独安装）
+- 只验证过 DeepSeek 模式下的完整链路，腾讯云等其它模式沿用原版实现，未做回归。
+- 后端与前端是原版提供的，本仓库只做了运行所需的兼容性修改，没有重做界面。
+- 智能体的解题效果依赖模型能力与题目类型，本仓库的改动只保证**链路稳定、错误可回滚、行为可测试**，不保证解题成功率。
 
-## 注意事项
+---
 
-1. 本工具仅用于合法的CTF比赛和安全研究
-2. 使用前请确保遵守比赛规则和相关法律法规
-3. 请勿在未授权的系统上使用本工具
+## 致谢与许可
 
-## 许可证
-
-MIT License
+- 原项目：西安交通大学 xjtuHunter 队伍，腾讯云 AI 渗透智能体黑客松第二名，原维护者九暑（passerW）。
+- 本项目沿用原项目的 MIT License 声明。
+- 本仓库仅用于 CTF 竞赛、安全教学与授权范围内的研究，请勿在未授权系统上使用。
